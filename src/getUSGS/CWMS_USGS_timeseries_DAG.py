@@ -13,7 +13,6 @@ from airflow.operators.python import get_current_context
 
 
 APIROOT = "https://cwms-data-test.cwbi.us/cwms-data/"
-APIKEY = "YtjeJIj35zjqshNLUClQNrl0nBKMNCO6jrLqBL1kILG805Tcf8JPJghz41pfrrHyffrT7wFWX0SfX5TeQOgXwC2V1uUdtV8aPHlpQVGJDfI1PoDqeaRW2o9g6i3jRnMVJIKV2FceGWM4UZM92D0xh6zKDIYw6CPaXuBZwXea35vSXj9qQYS7LNHqlUT0rmeI7wy8xZ4Ihd1dhxJIdD3UsnwxLwCokcWCxpSRCrkn93Grp7xUrNi5QkRAbsZoL5ZX"
 
 
 default_args = {
