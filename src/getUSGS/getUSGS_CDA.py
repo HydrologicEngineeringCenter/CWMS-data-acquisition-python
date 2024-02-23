@@ -1,3 +1,5 @@
+#!/bin/env python3
+
 import logging
 import pandas as pd
 import numpy as np
@@ -5,27 +7,24 @@ from datetime import datetime, timedelta
 import json
 from CWMS import CWMS
 import requests
-from airflow import DAG
-from airflow.decorators import dag, task
-from airflow.exceptions import AirflowSkipException
-from airflow.utils.task_group import TaskGroup
-from airflow.operators.python import get_current_context
+import os
 
 
+OFFICE = "LRL"
 APIROOT = "https://cwms-data-test.cwbi.us/cwms-data/"
+APIKEY = os.environ['CWBI_test_API_KEY']
+DAYS_BACK = 3
 
 
-default_args = {
-    "owner": "airflow",
-    "depends_on_past": False,
-    "start_date": (datetime.utcnow() - timedelta(hours=4)).replace(minute=0, second=0),
-    "catchup_by_default": False,
-    "email_on_failure": False,
-    "email_on_retry": False,
-    "retries": 1,
-    "retry_delay": timedelta(minutes=5),
-    "execution_timeout": timedelta(hours=1),
-}
+# create logger
+logger = logging.getLogger('simple_example')
+logger.setLevel(logging.INFO)
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter(
+    "%(asctime)s;%(levelname)s;%(message)s", "%Y-%m-%d %H:%M:%S")
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
 
 def get_USGS_params():
@@ -43,6 +42,7 @@ def get_USGS_params():
         ["00035", "Wind Speed", "Speed-Wind", 1, "mph", "Inst"],
         ["00036", "Wind Dir", "Dir-Wind", 1, "deg", "Inst"],
         ["00045", "Precip", "Precip-Inc", 1, "in", "Total"],
+        ["00045", "Precip", "Precip", 1, "in", "Total"],
         ["00052", "RelHumidity", "%-Humidity", 1, "%", "Inst"],
         ["00060", "Flow", "Flow", 1, "cfs", "Inst"],
         # ['00061','Flow',1,'cfs','Inst'],
@@ -55,7 +55,8 @@ def get_USGS_params():
         # ['62614','Elev-Lake','Elev',1,'ft','Inst'],
         ["63160", "Elev-NAVD88", "Elev", 1, "ft", "Inst"],
     ]
-    USGS_Params = pd.DataFrame(data, columns=columns).set_index("CWMS_PARAMETER")
+    USGS_Params = pd.DataFrame(
+        data, columns=columns).set_index("CWMS_PARAMETER")
     return USGS_Params
 
 
@@ -70,17 +71,22 @@ def get_CMWS_TS_Loc_Data(cwms, office):
         "CWMS",
         return_type="df",
     )
-    if "attribute" not in df.columns:
-        df["attribute"] = np.nan
-
     df[["location-id", "param", "type", "int", "dur", "ver"]] = df[
         "timeseries-id"
     ].str.split(".", expand=True)
+
     df = df[df["office-id"] == office]
+    df["base-loc"] = df["location-id"].str.split("-", expand=True)[0]
+    if "alias-id" not in df.columns:
+        df["alias-id"] = np.nan
+    if "attribute" not in df.columns:
+        df["attribute"] = np.nan
+    df = df.rename(columns={"alias-id": "USGS_Method_TS"})
 
     Locdf = cwms.retreive_loc_group(
         "USGS Station Number", "Agency Aliases", "CWMS", return_type="df"
     ).set_index("location-id")
+
     Locdf = Locdf[Locdf["office-id"] == office]
     # Grab all of the locations that have a USGS station number assigned to them
     USGS_alias = Locdf[Locdf["alias-id"].notnull()]
@@ -90,14 +96,24 @@ def get_CMWS_TS_Loc_Data(cwms, office):
     )
     # pad the USGS id with 0s if they are not 8 digits long
     USGS_alias.USGS_St_Num = USGS_alias.USGS_St_Num.str.rjust(8, "0")
-    # do an inner join with the time series that are in the USGS time series group and the location group.  Join based on the Location ID
-    USGS_ts = df.join(
+
+    # do an inner join with the time series that are in the USGS time series group and the location group.  Join based on the Location ID and office if
+    USGS_ts = pd.merge(df, USGS_alias, how="inner",
+                       on=["location-id", "office-id"])
+    # grab time series with missing USGS_St_Num and check to see if the base location has an assigned USGS station.
+    USGS_ts_base = pd.merge(
+        USGS_ts[USGS_ts.USGS_St_Num.isnull()].drop(
+            ["USGS_St_Num", "Loc_attribute"], axis=1
+        ),
         USGS_alias,
-        on="location-id",
-        lsuffix="ts",
-        rsuffix="loc",
-        how="inner",
+        left_on=["base-loc", "office-id"],
+        right_on=["location-id", "office-id"],
     )
+    # merge with existing dataframe
+    USGS_ts = pd.concat(
+        [USGS_ts[USGS_ts["USGS_St_Num"].notnull()], USGS_ts_base], axis=0
+    )
+
     USGS_Params = get_USGS_params()
     # this code fills in the USGS_Params field with values in the Time Series Group Attribute if it exists.  If it does not exist it
     # grabs the default USGS paramter for the coresponding CWMS parameter
@@ -112,7 +128,8 @@ def get_CMWS_TS_Loc_Data(cwms, office):
     USGS_ts.attribute = USGS_ts.attribute.str.rjust(5, "0")
     # renames the attribute column to USGS_PARAMETER
     USGS_ts = USGS_ts.rename(columns={"attribute": "USGS_PARAMETER"})
-    logging.info(f"CWMS TS Groups and Location Data Obtained")
+
+    logger.info(f"CWMS TS Groups and Location Data Obtained")
     return USGS_ts
 
 
@@ -129,8 +146,9 @@ def getUSGS_ts(sites, startDT, endDT):
         "sites": ",".join(sites),
         "startDT": startDT.isoformat(),
         "endDT": endDT.isoformat(),
+        "access": 3,
         # "parameterCd": ",".join(unique_param_codes),
-        #'period': 'P1D',
+        # 'period': 'P1D',
         # "modifiedSince": "PT6H",
         "siteStatus": "active",
     }
@@ -145,7 +163,8 @@ def getUSGS_ts(sites, startDT, endDT):
         + USGS_data.name.str.split(":").str[2]
     )
     USGS_data = USGS_data.set_index("Id.param")
-    logging.info(f"Data obtained from USGS")
+
+    logger.info(f"Data obtained from USGS")
     return USGS_data
 
 
@@ -164,14 +183,30 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
         tsId = row["timeseries-id"]
         USGS_Id_param = f"{row.USGS_St_Num}.{row.USGS_PARAMETER}"
         # check if the USGS st number and para code are in the data obtain from USGS api
-        logging.info(f"Attempting to write values for tsid -->  {tsId},{USGS_Id_param}")
+        logger.info(
+            f"Attempting to write values for tsid -->  {tsId},{USGS_Id_param}")
+        values = pd.DataFrame()
         if USGS_Id_param in USGS_data.index:
             # grab the time series values obtained from USGS API.
-            values = pd.DataFrame(USGS_data.loc[USGS_Id_param]["values"][0]["value"])
+            values_df = pd.DataFrame(USGS_data.loc[USGS_Id_param]["values"])
+            if values_df.shape[0] > 1:
+                if pd.isna(row.USGS_Method_TS):
+                    logger.warning(
+                        f"there are multiple time series for {USGS_Id_param} need to specify the USGS method TSID for {tsId}"
+                    )
+                else:
+                    temp = values_df.method.apply(pd.Series)
+                    temp = values_df.join(pd.json_normalize(temp.pop(0)))
+                    values = pd.DataFrame(
+                        temp.query(f"methodID == {row.USGS_Method_TS}")[
+                            "value"].item()
+                    )
+            else:
+                values = pd.DataFrame(values_df.loc[0, "value"])
             # if values array is empty then append infor to noData list
             if values.empty:
                 noData.append([tsId, USGS_Id_param])
-                logging.warning(
+                logger.warning(
                     f"FAIL No Data obtained from USGS for tsid: Values array is empty in USGS API output-->  {tsId},{USGS_Id_param}"
                 )
             else:
@@ -181,12 +216,13 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
                 # check again if values dataframe is empty after removing nodata_vals
                 if values.empty:
                     noData.append([tsId, USGS_Id_param])
-                    logging.warning(
+                    logger.warning(
                         f"FAIL No Data obtained from USGS for tsid: Values array is empty after removing -999999 values-->  {tsId},{USGS_Id_param}"
                     )
                 # if values are present grab information needed to save to CWMS database using CDA
                 else:
-                    values = values.reindex(columns=["dateTime", "value", "qualifiers"])
+                    values = values.reindex(
+                        columns=["dateTime", "value", "qualifiers"])
 
                     # adjust column names to fit cwms-python format.
                     values = values.rename(
@@ -200,7 +236,7 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
                     values.units = USGS_data.loc[USGS_Id_param]["variable"]["unit"][
                         "unitCode"
                     ]
-                    values.office = row["office-idts"]
+                    values.office = row["office-id"]
                     values["quality-code"] = 0
 
                     # write values to CWMS database
@@ -211,65 +247,49 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
                         message = json.loads(x.content.decode("UTF-8"))
                         if message["message"] == "Internal Error":
                             storErr.append([tsId, USGS_Id_param, message])
-                            logging.error(
+                            logger.error(
                                 f"FAIL Data could not be stored to CWMS database for -->  {tsId},{USGS_Id_param} CDA error = {message}"
                             )
                     else:
-                        logging.info(
+                        logger.info(
                             f"SUCCESS Data stored in CWMS database for -->  {tsId},{USGS_Id_param}"
                         )
         else:
             NotinAPI.append([tsId, USGS_Id_param])
-            logging.warning(
+            logger.warning(
                 f"FAIL USGS ID and parameter were not present in USGS API for-->  {tsId},{USGS_Id_param}"
             )
 
 
-@dag(
-    default_args=default_args,
-    tags=["CWMS", "USGS"],
-    schedule="@hourly",
-    max_active_runs=1,
-    max_active_tasks=4,
-    catchup=False,
-    doc_md=__doc__,
-)
-def CWMS_USGS_timeseries():
-    offices = ["LRL"]
-    for office in offices:
-        with TaskGroup(group_id=f"{office}_USGS") as tg:
-            apiKey = "apikey " + APIKEY
-            cwms = CWMS()
-            cwms.connect(APIROOT, apiKey=apiKey)
+def main():
 
-            @task(task_id=f"{office}_CWMS_USGS_TS_byOffice")
-            def CWMS_USGS_TS_byOffice(office):
-                context = get_current_context()
-                ti = context["ti"]
-                execution_date = ti.execution_date
+    apiKey = "apikey " + APIKEY
+    cwms = CWMS()
+    cwms.connect(APIROOT, apiKey=apiKey)
 
-                USGS_ts = get_CMWS_TS_Loc_Data(cwms, office)
+    execution_date = datetime.now()
 
-                # grab all of the unique USGS stations numbers to be sent to USGS api
-                sites = USGS_ts.USGS_St_Num.unique()
-                logging.info(f"Execution date {execution_date}")
+    USGS_ts = get_CMWS_TS_Loc_Data(cwms, OFFICE)
 
-                # This is added to the 'startDT'
-                tw_delta = -timedelta(hours=24)
+    # grab all of the unique USGS stations numbers to be sent to USGS api
+    sites = USGS_ts.USGS_St_Num.unique()
+    logger.info(f"Execution date {execution_date}")
 
-                # Set the execution date and time window for URL
-                startDT = execution_date + tw_delta
+    # This is added to the 'startDT'
+    tw_delta = -timedelta(DAYS_BACK)
 
-                # Airflow only looks at the last period during an execution run,
-                # so to ensure the latest data is retrieved, add 2 hours to end date
-                endDT = execution_date + timedelta(hours=2)
+    # Set the execution date and time window for URL
+    startDT = execution_date + tw_delta
 
-                logging.info(f"Grabing data from USGS between {startDT} and {endDT}")
-                USGS_data = getUSGS_ts(sites, startDT, endDT)
+    # Airflow only looks at the last period during an execution run,
+    # so to ensure the latest data is retrieved, add 2 hours to end date
+    endDT = execution_date + timedelta(hours=2)
 
-                CWMS_writeData(cwms, USGS_ts, USGS_data)
+    logger.info(f"Grabing data from USGS between {startDT} and {endDT}")
+    USGS_data = getUSGS_ts(sites, startDT, endDT)
 
-            CWMS_USGS_TS_byOffice(office)
+    CWMS_writeData(cwms, USGS_ts, USGS_data)
 
 
-DAG_ = CWMS_USGS_timeseries()
+if __name__ == "__main__":
+    main()
