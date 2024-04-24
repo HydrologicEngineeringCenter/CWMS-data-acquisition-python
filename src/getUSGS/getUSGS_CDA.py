@@ -5,29 +5,52 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import json
-from CWMS import CWMS
+import cwms
 import requests
 import os
+import sys
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
+
+parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+parser.add_argument("-d", "--days_back", default="1", help="Days back from current time to get data.  Can be decimal and integer values")
+parser.add_argument("-o", "--office", default=os.environ['OFFICE'], type=str, help="Office to grab data for.  defaults as environment variable of OFFICE.")
+parser.add_argument("-a", "--api_root", default=os.environ['CDA_API_ROOT'], type=str, help="Api Root for CDA.  defaults as environment variable of CDA_API_ROOT.")
+parser.add_argument("-k", "--api_key_loc", default=os.environ["CWMS_HOME"] + "/.cwms/cda_api_key", type=str, help="file storing Api Key by default it will grab from $CWMS_HOME/.cwms/cda_api_key")
+args = vars(parser.parse_args())
 
 
-OFFICE = "LRL"
-APIROOT = "https://cwms-data-test.cwbi.us/cwms-data/"
-APIKEY = os.environ['CWBI_test_API_KEY']
-DAYS_BACK = 3
+OFFICE = args["office"]
+APIROOT = args["api_root"]
+# place a file in .cwms names api_key that holds you apikey
+# to be used to write data to the database using CDA
+api_key_loc = args["api_key_loc"]
+with open(api_key_loc, "r") as f:
+    APIKEY = f.readline().strip()
 
+# Days back is defined as a argument to the program.
+# run program by typing python3 getUSGS.py 5
+# the 5 would mean grab data starting 5 days ago to now
+DAYS_BACK = float(args["days_back"])
 
-# create logger
-logger = logging.getLogger('simple_example')
-logger.setLevel(logging.INFO)
-ch = logging.StreamHandler()
-ch.setLevel(logging.INFO)
+# import CWMS module and assign the apiROOT and apikey to be
+# used throughout the program
+apiKey = "apikey " + APIKEY
+api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
+
+# create logger for logging
+logger = logging.getLogger()
+if (logger.hasHandlers()):
+    logger.handlers.clear()
+handler = logging.StreamHandler()
 formatter = logging.Formatter(
     "%(asctime)s;%(levelname)s;%(message)s", "%Y-%m-%d %H:%M:%S")
-ch.setFormatter(formatter)
-logger.addHandler(ch)
-
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
+logger.propagate = False
 
 def get_USGS_params():
+    # defines USGS standard parameters.
     columns = [
         "USGS_PARAMETER",
         "USGS_Alias",
@@ -60,17 +83,13 @@ def get_USGS_params():
     return USGS_Params
 
 
-def get_CMWS_TS_Loc_Data(cwms, office):
+def get_CMWS_TS_Loc_Data(office):
     """
     get time series group and location alias information and combine into singe dataframe
 
     """
-    df = cwms.retreive_ts_group(
-        "USGS TS Data Acquisition",
-        "Data Acquisition",
-        "CWMS",
-        return_type="df",
-    )
+    df = cwms.get_timeseries_group(group_id="USGS TS Data Acquisition",category_id="Data Acquisition",office_id="CWMS").df
+
     df[["location-id", "param", "type", "int", "dur", "ver"]] = df[
         "timeseries-id"
     ].str.split(".", expand=True)
@@ -83,10 +102,7 @@ def get_CMWS_TS_Loc_Data(cwms, office):
         df["attribute"] = np.nan
     df = df.rename(columns={"alias-id": "USGS_Method_TS"})
 
-    Locdf = cwms.retreive_loc_group(
-        "USGS Station Number", "Agency Aliases", "CWMS", return_type="df"
-    ).set_index("location-id")
-
+    Locdf = cwms.get_location_group(loc_group_id="USGS Station Number",category_id="Agency Aliases",office_id="CWMS").df.set_index('location-id')
     Locdf = Locdf[Locdf["office-id"] == office]
     # Grab all of the locations that have a USGS station number assigned to them
     USGS_alias = Locdf[Locdf["alias-id"].notnull()]
@@ -168,7 +184,7 @@ def getUSGS_ts(sites, startDT, endDT):
     return USGS_data
 
 
-def CWMS_writeData(cwms, USGS_ts, USGS_data):
+def CWMS_writeData(USGS_ts, USGS_data):
     # lists to hold time series that fail
     # noData -> usgs location and parameter were present in USGS api but the values were empty
     # NotinAPI -> usgs location and parameter were not retrieved from USGS api
@@ -176,6 +192,9 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
     noData = []
     NotinAPI = []
     storErr = []
+    mult_ids = []
+    total_recs = len(USGS_ts.index)
+    saved = 0
 
     # loop through all rows in the USGS_ts dataframe
     for index, row in USGS_ts.iterrows():
@@ -192,8 +211,9 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
             if values_df.shape[0] > 1:
                 if pd.isna(row.USGS_Method_TS):
                     logger.warning(
-                        f"there are multiple time series for {USGS_Id_param} need to specify the USGS method TSID for {tsId}"
+                        f"FAIL there are multiple time series for {USGS_Id_param} need to specify the USGS method TSID for {tsId}"
                     )
+                    mult_ids.append([tsId, USGS_Id_param])
                 else:
                     temp = values_df.method.apply(pd.Series)
                     temp = values_df.join(pd.json_normalize(temp.pop(0)))
@@ -231,45 +251,43 @@ def CWMS_writeData(cwms, USGS_ts, USGS_data):
                             "qualifiers": "quality-code",
                         }
                     )
-                    values.tsId = tsId  # + '-CDA'#tsId.replace('Web','CDA')
-
-                    values.units = USGS_data.loc[USGS_Id_param]["variable"]["unit"][
-                        "unitCode"
-                    ]
-                    values.office = row["office-id"]
+                    units = USGS_data.loc[USGS_Id_param]['variable']['unit']['unitCode']
+                    office = row["office-id"]
                     values["quality-code"] = 0
 
-                    # write values to CWMS database
-                    x = cwms.write_ts(values)
-
-                    # check if data stored scucessfully
-                    if x.content != b"":
-                        message = json.loads(x.content.decode("UTF-8"))
-                        if message["message"] == "Internal Error":
-                            storErr.append([tsId, USGS_Id_param, message])
-                            logger.error(
-                                f"FAIL Data could not be stored to CWMS database for -->  {tsId},{USGS_Id_param} CDA error = {message}"
-                            )
-                    else:
+                    # write values to CWMS database	    
+                    try:
+                        data = cwms.timeseries_df_to_json(data=values, tsId=tsId, units=units, office_id=office)
+                        x = cwms.store_timeseries(data)
                         logger.info(
                             f"SUCCESS Data stored in CWMS database for -->  {tsId},{USGS_Id_param}"
                         )
+                        saved = saved + 1
+                    except Exception as error:
+                        storErr.append([tsId, USGS_Id_param, error])
+                        logger.error(
+                                f"FAIL Data could not be stored to CWMS database for -->  {tsId},{USGS_Id_param} CDA error = {error}"
+                            )
         else:
             NotinAPI.append([tsId, USGS_Id_param])
             logger.warning(
                 f"FAIL USGS ID and parameter were not present in USGS API for-->  {tsId},{USGS_Id_param}"
             )
 
+    logger.info(f"A total of {saved} records were successfully saved out of {total_recs}")
+    logger.info(f"The following tsIds errored due to no data received from USGS for the time period requested: {noData}")
+    logger.info(f"The following tsIds errored because the USGS ID and parameter were not found in USGS API {NotinAPI}")
+    logger.info(f"The following tsIds errored when storing into CDA {storErr}")
+    logger.info(f"The following tsIds errored because multiple method TSID were present for the USGS station. A USGS method TSID needs to be defined in the time series group in CWMS {mult_ids}")
+
 
 def main():
-
-    apiKey = "apikey " + APIKEY
-    cwms = CWMS()
-    cwms.connect(APIROOT, apiKey=apiKey)
-
+    logger.info(f"CDA connection: {APIROOT}")
+    logger.info(
+        f"Data will be grabbed and stored from USGS for past {DAYS_BACK} days")
     execution_date = datetime.now()
 
-    USGS_ts = get_CMWS_TS_Loc_Data(cwms, OFFICE)
+    USGS_ts = get_CMWS_TS_Loc_Data(OFFICE)
 
     # grab all of the unique USGS stations numbers to be sent to USGS api
     sites = USGS_ts.USGS_St_Num.unique()
@@ -288,8 +306,9 @@ def main():
     logger.info(f"Grabing data from USGS between {startDT} and {endDT}")
     USGS_data = getUSGS_ts(sites, startDT, endDT)
 
-    CWMS_writeData(cwms, USGS_ts, USGS_data)
+    CWMS_writeData(USGS_ts, USGS_data)
 
 
 if __name__ == "__main__":
     main()
+
