@@ -114,7 +114,7 @@ def get_CMWS_TS_Loc_Data(office):
     USGS_alias.USGS_St_Num = USGS_alias.USGS_St_Num.str.rjust(8, "0")
 
     # do an inner join with the time series that are in the USGS time series group and the location group.  Join based on the Location ID and office if
-    USGS_ts = pd.merge(df, USGS_alias, how="inner",
+    USGS_ts = pd.merge(df, USGS_alias, how="left",
                        on=["location-id", "office-id"])
     # grab time series with missing USGS_St_Num and check to see if the base location has an assigned USGS station.
     USGS_ts_base = pd.merge(
