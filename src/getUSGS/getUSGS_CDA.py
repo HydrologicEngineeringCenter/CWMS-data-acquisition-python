@@ -13,29 +13,11 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
 parser.add_argument("-d", "--days_back", default="1", help="Days back from current time to get data.  Can be decimal and integer values")
-parser.add_argument("-o", "--office", default=os.environ['OFFICE'], type=str, help="Office to grab data for.  defaults as environment variable of OFFICE.")
-parser.add_argument("-a", "--api_root", default=os.environ['CDA_API_ROOT'], type=str, help="Api Root for CDA.  defaults as environment variable of CDA_API_ROOT.")
-parser.add_argument("-k", "--api_key_loc", default=os.environ["CWMS_HOME"] + "/.cwms/cda_api_key", type=str, help="file storing Api Key by default it will grab from $CWMS_HOME/.cwms/cda_api_key")
+parser.add_argument("-o", "--office", required=True, type=str, help="Office to grab data for (Required).")
+parser.add_argument("-a", "--api_root", required=True, type=str, help="Api Root for CDA (Required).")
+parser.add_argument("-k", "--api_key", default=None, type=str, help="api key. one of api_key or api_key_loc are required")
+parser.add_argument("-kl", "--api_key_loc", default=None, type=str, help="file storing Api Key. One of api_key or api_key_loc are required")
 args = vars(parser.parse_args())
-
-
-OFFICE = args["office"]
-APIROOT = args["api_root"]
-# place a file in .cwms names api_key that holds you apikey
-# to be used to write data to the database using CDA
-api_key_loc = args["api_key_loc"]
-with open(api_key_loc, "r") as f:
-    APIKEY = f.readline().strip()
-
-# Days back is defined as a argument to the program.
-# run program by typing python3 getUSGS.py 5
-# the 5 would mean grab data starting 5 days ago to now
-DAYS_BACK = float(args["days_back"])
-
-# import CWMS module and assign the apiROOT and apikey to be
-# used throughout the program
-apiKey = "apikey " + APIKEY
-api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
 
 # create logger for logging
 logger = logging.getLogger()
@@ -48,6 +30,29 @@ handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
 logger.propagate = False
+
+OFFICE = args["office"]
+APIROOT = args["api_root"]
+# place a file in .cwms names api_key that holds you apikey
+# to be used to write data to the database using CDA
+if args["api_key_loc"] is not None:
+    api_key_loc = args["api_key_loc"]
+    with open(api_key_loc, "r") as f:
+        APIKEY = f.readline().strip()
+elif args["api_key"] is not None:
+    APIKEY=args["api_key"]
+else:
+    raise Exception("must add a value to either --api_key(-a) or --api_key_loc(-al)") 
+
+# Days back is defined as a argument to the program.
+# run program by typing python3 getUSGS.py 5
+# the 5 would mean grab data starting 5 days ago to now
+DAYS_BACK = float(args["days_back"])
+
+# import CWMS module and assign the apiROOT and apikey to be
+# used throughout the program
+apiKey = "apikey " + APIKEY
+api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
 
 def get_USGS_params():
     # defines USGS standard parameters.
