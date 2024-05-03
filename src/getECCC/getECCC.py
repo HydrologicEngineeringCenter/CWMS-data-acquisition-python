@@ -1,5 +1,6 @@
 #!/bin/env python3
 # this script will download flow and stage instantaneous data from Environment Canada
+# https://eccc-msc.github.io/open-data/msc-data/obs_hydrometric/readme_hydrometric-datamart_en/
 import logging
 import pandas as pd
 import numpy as np
