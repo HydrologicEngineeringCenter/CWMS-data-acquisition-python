@@ -92,7 +92,7 @@ def main():
     execution_date = datetime.now()
 
     # create list of column names
-    cols =  [elem["name"] for elem in elems]
+    cols =  [d[list(d.keys())[0]] for d in elems]
     # add date-time as column
     cols.insert(0, 'date-time')
 
