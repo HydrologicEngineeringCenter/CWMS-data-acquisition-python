@@ -42,6 +42,7 @@ elems = [
     {"name":"maxt"}, 
     {"name":"mint"}, 
     {"name":"obst"},
+    {"vX":13}
     
 ]
 #ts version to save as
@@ -52,14 +53,18 @@ tsMapping = {"pcpn":f"Precip.Total.~1Day.1Day.{version}",
     "snwd":f"Depth-Snow.Total.~1Week.1Month.{version}", 
     "maxt":f"Temp-Air.Max.~1Day.1Day.{version}", 
     "mint":f"Temp-Air.Min.~1Day.1Day.{version}", 
-    "obst":f"Temp-Air.Inst.~1Day.0.{version}"}
+    "obst":f"Temp-Air.Inst.~1Day.0.{version}", 
+    13:f"Depth-SWE.Total.~1Week.1Month.{version}"
+    }
 #unit mapping  
 unitMapping = {"pcpn":"in", 
     "snow":"in", 
     "snwd":"in", 
     "maxt":"F", 
     "mint":"F", 
-    "obst":"F"}
+    "obst":"F",
+    13:"in"
+    }
 #missing value in CWMS
 missingValueCwms = -340282346638528859811704183484516925440
 
