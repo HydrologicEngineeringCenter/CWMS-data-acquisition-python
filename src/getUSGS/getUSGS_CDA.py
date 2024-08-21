@@ -204,11 +204,11 @@ def CWMS_writeData(USGS_ts, USGS_data):
     # loop through all rows in the USGS_ts dataframe
     for index, row in USGS_ts.iterrows():
         # grab the CWMS time series if and the USGS station numbuer plus USGS parameter code
-        tsId = row["timeseries-id"]
+        ts_id = row["timeseries-id"]
         USGS_Id_param = f"{row.USGS_St_Num}.{row.USGS_PARAMETER}"
         # check if the USGS st number and para code are in the data obtain from USGS api
         logger.info(
-            f"Attempting to write values for tsid -->  {tsId},{USGS_Id_param}")
+            f"Attempting to write values for ts_id -->  {ts_id},{USGS_Id_param}")
         values = pd.DataFrame()
         if USGS_Id_param in USGS_data.index:
             # grab the time series values obtained from USGS API.
@@ -216,23 +216,29 @@ def CWMS_writeData(USGS_ts, USGS_data):
             if values_df.shape[0] > 1:
                 if pd.isna(row.USGS_Method_TS):
                     logger.warning(
-                        f"FAIL there are multiple time series for {USGS_Id_param} need to specify the USGS method TSID for {tsId}"
+                        f"FAIL there are multiple time series for {USGS_Id_param} need to specify the USGS method TSID for {ts_id}"
                     )
-                    mult_ids.append([tsId, USGS_Id_param])
+                    mult_ids.append([ts_id, USGS_Id_param])
                 else:
                     temp = values_df.method.apply(pd.Series)
                     temp = values_df.join(pd.json_normalize(temp.pop(0)))
-                    values = pd.DataFrame(
-                        temp.query(f"methodID == {row.USGS_Method_TS}")[
-                            "value"].item()
-                    )
+                    try:
+                        values = pd.DataFrame(
+                            temp.query(f"methodID == {row.USGS_Method_TS}")[
+                                "value"].item()
+                        )
+                    except Exception as error:
+                        mult_ids.append([ts_id, USGS_Id_param])
+                        logger.error(
+                                f"The USGS method ID defined could not be found from the USGS API check that it is correct for -->  {ts_id},{USGS_Id_param},{row.USGS_Method_TS}"
+                            )
             else:
                 values = pd.DataFrame(values_df.loc[0, "value"])
             # if values array is empty then append infor to noData list
             if values.empty:
-                noData.append([tsId, USGS_Id_param])
+                noData.append([ts_id, USGS_Id_param])
                 logger.warning(
-                    f"FAIL No Data obtained from USGS for tsid: Values array is empty in USGS API output-->  {tsId},{USGS_Id_param}"
+                    f"FAIL No Data obtained from USGS for ts_id: Values array is empty in USGS API output-->  {ts_id},{USGS_Id_param}"
                 )
             else:
                 # grab value  and for no data (ie -999999) remove from dataset
@@ -240,9 +246,9 @@ def CWMS_writeData(USGS_ts, USGS_data):
                 values = values[values.value != str(int(nodata_val))]
                 # check again if values dataframe is empty after removing nodata_vals
                 if values.empty:
-                    noData.append([tsId, USGS_Id_param])
+                    noData.append([ts_id, USGS_Id_param])
                     logger.warning(
-                        f"FAIL No Data obtained from USGS for tsid: Values array is empty after removing -999999 values-->  {tsId},{USGS_Id_param}"
+                        f"FAIL No Data obtained from USGS for ts_id: Values array is empty after removing -999999 values-->  {ts_id},{USGS_Id_param}"
                     )
                 # if values are present grab information needed to save to CWMS database using CDA
                 else:
@@ -262,28 +268,28 @@ def CWMS_writeData(USGS_ts, USGS_data):
 
                     # write values to CWMS database	    
                     try:
-                        data = cwms.timeseries_df_to_json(data=values, tsId=tsId, units=units, office_id=office)
+                        data = cwms.timeseries_df_to_json(data=values, ts_id=ts_id, units=units, office_id=office)
                         x = cwms.store_timeseries(data)
                         logger.info(
-                            f"SUCCESS Data stored in CWMS database for -->  {tsId},{USGS_Id_param}"
+                            f"SUCCESS Data stored in CWMS database for -->  {ts_id},{USGS_Id_param}"
                         )
                         saved = saved + 1
                     except Exception as error:
-                        storErr.append([tsId, USGS_Id_param, error])
+                        storErr.append([ts_id, USGS_Id_param, error])
                         logger.error(
-                                f"FAIL Data could not be stored to CWMS database for -->  {tsId},{USGS_Id_param} CDA error = {error}"
+                                f"FAIL Data could not be stored to CWMS database for -->  {ts_id},{USGS_Id_param} CDA error = {error}"
                             )
         else:
-            NotinAPI.append([tsId, USGS_Id_param])
+            NotinAPI.append([ts_id, USGS_Id_param])
             logger.warning(
-                f"FAIL USGS ID and parameter were not present in USGS API for-->  {tsId},{USGS_Id_param}"
+                f"FAIL USGS ID and parameter were not present in USGS API for-->  {ts_id},{USGS_Id_param}"
             )
 
     logger.info(f"A total of {saved} records were successfully saved out of {total_recs}")
-    logger.info(f"The following tsIds errored due to no data received from USGS for the time period requested: {noData}")
-    logger.info(f"The following tsIds errored because the USGS ID and parameter were not found in USGS API {NotinAPI}")
-    logger.info(f"The following tsIds errored when storing into CDA {storErr}")
-    logger.info(f"The following tsIds errored because multiple method TSID were present for the USGS station. A USGS method TSID needs to be defined in the time series group in CWMS {mult_ids}")
+    logger.info(f"The following ts_ids errored due to no data received from USGS for the time period requested: {noData}")
+    logger.info(f"The following ts_ids errored because the USGS ID and parameter were not found in USGS API {NotinAPI}")
+    logger.info(f"The following ts_ids errored when storing into CDA {storErr}")
+    logger.info(f"The following ts_ids errored because multiple method TSID were present for the USGS station. A USGS method TSID needs to be defined in the time series group in CWMS or an incorrect TSID is defined. {mult_ids}")
 
 
 def main():
