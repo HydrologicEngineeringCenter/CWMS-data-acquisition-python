@@ -47,7 +47,7 @@ elems = [
 ]
 #ts version to save as
 version = 'Raw-NWS-ACIS'
-# ts element to tsid mapping
+# ts element to ts_id mapping
 tsMapping = {"pcpn":f"Precip.Total.~1Day.1Day.{version}", 
     "snow":f"Depth-Inc-Snow.Total.~1Day.1Day.{version}", 
     "snwd":f"Depth-Snow.Total.~1Week.1Month.{version}", 
@@ -156,10 +156,10 @@ def main():
                 # Screen out A flag which is paired w/ S flag to signify a multiday total
                 d['value'] = d['value'].replace(r'[^0-9\.]', '', regex=True)
                 # assign timeseries id from mapping dictionary
-                tsId = f'{loc}.{tsMapping[param]}'
+                ts_id = f'{loc}.{tsMapping[param]}'
                 #convert to json
                 data_json = cwms.timeseries_df_to_json(data = d, 
-                                                tsId = tsId, units = units, office_id = OFFICE)
+                                                ts_id = ts_id, units = units, office_id = OFFICE)
                 #print(data_json)
                 #store data
                 cwms.store_timeseries(data=data_json)

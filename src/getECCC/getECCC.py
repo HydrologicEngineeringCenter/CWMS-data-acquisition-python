@@ -123,12 +123,12 @@ def getECCC_data(prov, id, ECCC_FREQ) -> pd.DataFrame:
            return None, None 
 
 
-def CWMS_writeData(df, tsId, units, OFFICE, qualityCode):
+def CWMS_writeData(df, ts_id, units, OFFICE, qualityCode):
     values = df.reindex(columns=['date','value'])
     #adjust column names to fit cwms-python format.
     values = values.rename(columns={'date': 'date-time', 'value': 'value'})
     values['quality-code'] = qualityCode 
-    data = cwms.timeseries_df_to_json(data = values, tsId = tsId, units = units, office_id = OFFICE)
+    data = cwms.timeseries_df_to_json(data = values, ts_id = ts_id, units = units, office_id = OFFICE)
     
     #write values to CWMS database
     x = cwms.store_timeseries(data=data)
@@ -150,28 +150,28 @@ def loopThroughTs(ECCC_ts):
         # if the station is different from the last one
         if row.ECCC_St_ID != lastStation:
             eccc_id = row.ECCC_St_ID
-            #logger.info(f"Attempting to write values for tsid -->  {eccc_id}")
+            #logger.info(f"Attempting to write values for ts_id -->  {eccc_id}")
             lastStation = eccc_id
             prov = row['Prov/Terr']
             # get the data
             dfStage, dfFlow = getECCC_data(prov, eccc_id, ECCC_FREQ)
         if isinstance(dfStage, pd.DataFrame):      
-            tsId = row['timeseries-id']
+            ts_id = row['timeseries-id']
             # if flow parameter and there are values, store them
             if row.param == 'Flow' and dfFlow.value.isnull().all() == False:
-                logger.info(f"Attempting to write values for tsid -->  {eccc_id} {tsId}")
-                CWMS_writeData(dfFlow, tsId, 'cms', OFFICE, 0)
+                logger.info(f"Attempting to write values for ts_id -->  {eccc_id} {ts_id}")
+                CWMS_writeData(dfFlow, ts_id, 'cms', OFFICE, 0)
                 saved = saved + 1
             # else store the stage or elevation values
             elif dfStage.value.isnull().all() == False:
-                logger.info(f"Attempting to write values for tsid -->  {eccc_id} {tsId}")
-                CWMS_writeData(dfStage, tsId, 'm', OFFICE, 0)
+                logger.info(f"Attempting to write values for ts_id -->  {eccc_id} {ts_id}")
+                CWMS_writeData(dfStage, ts_id, 'm', OFFICE, 0)
                 saved = saved + 1
             else:
                 storErr.append(row['timeseries-id'])
 
     logger.info(f"A total of {saved} records were successfully saved out of {total_recs}")
-    logger.info(f"The following tsIds errored when storing {storErr}")
+    logger.info(f"The following ts_ids errored when storing {storErr}")
 
 
 def main():
