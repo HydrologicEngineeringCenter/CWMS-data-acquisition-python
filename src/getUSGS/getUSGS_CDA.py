@@ -122,7 +122,7 @@ def get_CMWS_TS_Loc_Data(office):
     USGS_ts = pd.merge(df, USGS_alias, how="left",
                        on=["location-id", "office-id"])
     # grab time series with missing USGS_St_Num and check to see if the base location has an assigned USGS station.
-    if len(USGS_ts[USGS_ts.USGS_St_Num.isnull()]):
+    if USGS_ts.USGS_St_Num.isnull().any():
         USGS_ts_base = pd.merge(
             USGS_ts[USGS_ts.USGS_St_Num.isnull()].drop(
                 ["USGS_St_Num", "Loc_attribute"], axis=1
