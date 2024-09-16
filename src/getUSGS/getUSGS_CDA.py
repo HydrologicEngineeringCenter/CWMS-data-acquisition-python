@@ -122,18 +122,19 @@ def get_CMWS_TS_Loc_Data(office):
     USGS_ts = pd.merge(df, USGS_alias, how="left",
                        on=["location-id", "office-id"])
     # grab time series with missing USGS_St_Num and check to see if the base location has an assigned USGS station.
-    USGS_ts_base = pd.merge(
-        USGS_ts[USGS_ts.USGS_St_Num.isnull()].drop(
-            ["USGS_St_Num", "Loc_attribute"], axis=1
-        ),
-        USGS_alias,
-        left_on=["base-loc", "office-id"],
-        right_on=["location-id", "office-id"],
-    )
-    # merge with existing dataframe
-    USGS_ts = pd.concat(
-        [USGS_ts[USGS_ts["USGS_St_Num"].notnull()], USGS_ts_base], axis=0
-    )
+    if len(USGS_ts[USGS_ts.USGS_St_Num.isnull()]):
+        USGS_ts_base = pd.merge(
+            USGS_ts[USGS_ts.USGS_St_Num.isnull()].drop(
+                ["USGS_St_Num", "Loc_attribute"], axis=1
+            ),
+            USGS_alias,
+            left_on=["base-loc", "office-id"],
+            right_on=["location-id", "office-id"],
+        )
+        # merge with existing dataframe
+        USGS_ts = pd.concat(
+            [USGS_ts[USGS_ts["USGS_St_Num"].notnull()], USGS_ts_base], axis=0
+        )
 
     USGS_Params = get_USGS_params()
     # this code fills in the USGS_Params field with values in the Time Series Group Attribute if it exists.  If it does not exist it
