@@ -94,8 +94,46 @@ def get_CMWS_TS_Loc_Data(office):
 
     logger.info(f"CWMS TS Groups and Location Data Obtained")
     return eccc_ts
+def check_even_5min_interval(df, datetime_col):
+    """Checks if a datetime column is on an even 5-minute interval."""
+    tmpDf = df.copy()
+    
+    tmpDf[datetime_col] = pd.to_datetime(tmpDf[datetime_col])
 
-def getECCC_data(prov, id, ECCC_FREQ) -> pd.DataFrame:
+    tmpDf['time_diff'] = tmpDf[datetime_col].diff()
+    tmpDf['time_diff_minutes'] = tmpDf['time_diff'].dt.total_seconds() / 60
+
+    # Check if all time differences are multiples of 5
+    return (tmpDf['time_diff_minutes'] % 5 == 0).all()
+
+def check_and_shift_to_5min(df, datetime_col):
+    """
+    Checks if a datetime column is on a 5-minute interval and shifts data if not.
+
+    Args:
+        df (pd.DataFrame): The DataFrame containing the datetime column.
+        datetime_col (str): The name of the datetime column.
+
+    Returns:
+        pd.DataFrame: The DataFrame with the datetime column on a 5-minute interval.
+    """
+    tmpDf = df.copy()
+
+    # Convert the column to datetime if it's not already
+    tmpDf[datetime_col] = pd.to_datetime(tmpDf[datetime_col])
+
+
+    is_5min_interval = check_even_5min_interval(tmpDf.copy(), datetime_col)
+
+    if not is_5min_interval:
+        # Round the datetime column to the nearest 5 minutes
+        tmpDf[datetime_col] = tmpDf[datetime_col].dt.round('5min')
+    
+    #tmpDf.dropna(subset=['value'], inplace=True)
+
+    return tmpDf
+
+def getECCC_data(prov, id, ECCC_FREQ, snapTo5Minutes = True) -> pd.DataFrame:
 
     url = 'https://dd.weather.gc.ca/hydrometric/csv/'+prov+'/'+ECCC_FREQ+'/'+prov+'_'+id+'_'+ECCC_FREQ+'_hydrometric.csv'
     logger.info(url)
@@ -109,6 +147,9 @@ def getECCC_data(prov, id, ECCC_FREQ) -> pd.DataFrame:
         df['Date']= pd.to_datetime(df['Date'])
         # need to convert from '2024-02-16 08:30:00-06:00' format to '2024-02-16 14:30:00' so it stores in CWMS correctly
         df['Date'] = df['Date'].values 
+        # will snap to the nearest 5 minutes if true
+        if snapTo5Minutes:
+            df = check_and_shift_to_5min(df, 'Date')
         dfStage = df[["Date", "Water Level / Niveau d'eau (m)"]]
         dfStage.columns = ['date', 'value']
         #drop any na values
@@ -143,32 +184,37 @@ def loopThroughTs(ECCC_ts):
     lastStation = None
     saved = 0
 
-
-
-
     for index, row in ECCC_ts.iterrows():
+        eccc_id = row.ECCC_St_ID
+        prov = row['Prov/Terr']
+        ts_id = row['timeseries-id']
         # if the station is different from the last one
-        if row.ECCC_St_ID != lastStation:
-            eccc_id = row.ECCC_St_ID
+        if eccc_id != lastStation:
             #logger.info(f"Attempting to write values for ts_id -->  {eccc_id}")
-            lastStation = eccc_id
-            prov = row['Prov/Terr']
             # get the data
             dfStage, dfFlow = getECCC_data(prov, eccc_id, ECCC_FREQ)
-        if isinstance(dfStage, pd.DataFrame):      
-            ts_id = row['timeseries-id']
+        if row.param == 'Flow':
             # if flow parameter and there are values, store them
-            if row.param == 'Flow' and dfFlow.value.isnull().all() == False:
+            if isinstance(dfStage, pd.DataFrame) and dfFlow.value.isnull().all() == False:
                 logger.info(f"Attempting to write values for ts_id -->  {eccc_id} {ts_id}")
-                CWMS_writeData(dfFlow, ts_id, 'cms', OFFICE, 0)
-                saved = saved + 1
+                try:
+                    CWMS_writeData(dfFlow, ts_id, 'cms', OFFICE, 0)
+                    saved = saved + 1
+                except:
+                    storErr.append(row['timeseries-id'])
+                    logger.info(f"Error writing values for ts_id -->  {eccc_id} {ts_id}")
+        if row.param == 'Stage' or row.param == 'Elev':
             # else store the stage or elevation values
-            elif dfStage.value.isnull().all() == False:
+            if isinstance(dfStage, pd.DataFrame) and dfStage.value.isnull().all() == False:
                 logger.info(f"Attempting to write values for ts_id -->  {eccc_id} {ts_id}")
-                CWMS_writeData(dfStage, ts_id, 'm', OFFICE, 0)
-                saved = saved + 1
-            else:
-                storErr.append(row['timeseries-id'])
+                try:
+                    CWMS_writeData(dfStage, ts_id, 'm', OFFICE, 0)
+                    saved = saved + 1
+                except:
+                    storErr.append(row['timeseries-id'])
+                    logger.info(f"Error writing values for ts_id -->  {eccc_id} {ts_id}")
+        lastStation = eccc_id
+
 
     logger.info(f"A total of {saved} records were successfully saved out of {total_recs}")
     logger.info(f"The following ts_ids errored when storing {storErr}")
