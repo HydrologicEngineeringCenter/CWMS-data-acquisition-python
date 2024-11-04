@@ -155,7 +155,7 @@ def get_CMWS_TS_Loc_Data(office):
     return USGS_ts
 
 
-def getUSGS_ts(sites, startDT, endDT):
+def getUSGS_ts(sites, startDT, endDT, access = None):
     """
     Function to grab data from the USGS based off of dataretieve-python
     """
@@ -168,7 +168,7 @@ def getUSGS_ts(sites, startDT, endDT):
         "sites": ",".join(sites),
         "startDT": startDT.isoformat(),
         "endDT": endDT.isoformat(),
-        "access": 3,
+        "access": access,
         # "parameterCd": ",".join(unique_param_codes),
         # 'period': 'P1D',
         # "modifiedSince": "PT6H",
@@ -190,7 +190,7 @@ def getUSGS_ts(sites, startDT, endDT):
     return USGS_data
 
 
-def CWMS_writeData(USGS_ts, USGS_data):
+def CWMS_writeData(USGS_ts, USGS_data, USGS_data_method):
     # lists to hold time series that fail
     # noData -> usgs location and parameter were present in USGS api but the values were empty
     # NotinAPI -> usgs location and parameter were not retrieved from USGS api
@@ -211,9 +211,14 @@ def CWMS_writeData(USGS_ts, USGS_data):
         logger.info(
             f"Attempting to write values for ts_id -->  {ts_id},{USGS_Id_param}")
         values = pd.DataFrame()
-        if USGS_Id_param in USGS_data.index:
+        if (USGS_Id_param in USGS_data.index) or (USGS_Id_param in USGS_data_method.index):
+            if pd.isna(row.USGS_Method_TS):
+                USGS_data_row = USGS_data.loc[USGS_Id_param]
+            else:
+                USGS_data_row = USGS_data_method.loc[USGS_Id_param]
+
             # grab the time series values obtained from USGS API.
-            values_df = pd.DataFrame(USGS_data.loc[USGS_Id_param]["values"])
+            values_df = pd.DataFrame(USGS_data_row['values'])
             if values_df.shape[0] > 1:
                 if pd.isna(row.USGS_Method_TS):
                     logger.warning(
@@ -243,7 +248,7 @@ def CWMS_writeData(USGS_ts, USGS_data):
                 )
             else:
                 # grab value  and for no data (ie -999999) remove from dataset
-                nodata_val = USGS_data.loc[USGS_Id_param]["variable"]["noDataValue"]
+                nodata_val = USGS_data_row['variable']['noDataValue']
                 values = values[values.value != str(int(nodata_val))]
                 # check again if values dataframe is empty after removing nodata_vals
                 if values.empty:
@@ -263,7 +268,7 @@ def CWMS_writeData(USGS_ts, USGS_data):
                             "qualifiers": "quality-code",
                         }
                     )
-                    units = USGS_data.loc[USGS_Id_param]['variable']['unit']['unitCode']
+                    units = USGS_data_row['variable']['unit']['unitCode']
                     office = row["office-id"]
                     values["quality-code"] = 0
 
@@ -302,7 +307,8 @@ def main():
     USGS_ts = get_CMWS_TS_Loc_Data(OFFICE)
 
     # grab all of the unique USGS stations numbers to be sent to USGS api
-    sites = USGS_ts.USGS_St_Num.unique()
+    sites = USGS_ts[USGS_ts['USGS_Method_TS'].isna()].USGS_St_Num.unique()
+    method_sites = USGS_ts[USGS_ts['USGS_Method_TS'].notna()].USGS_St_Num.unique()
     logger.info(f"Execution date {execution_date}")
 
     # This is added to the 'startDT'
@@ -316,9 +322,18 @@ def main():
     endDT = execution_date + timedelta(hours=2)
 
     logger.info(f"Grabing data from USGS between {startDT} and {endDT}")
-    USGS_data = getUSGS_ts(sites, startDT, endDT)
 
-    CWMS_writeData(USGS_ts, USGS_data)
+    USGS_data = pd.DataFrame()
+    USGS_data_method = pd.DataFrame()
+    
+    if len(sites) > 0:
+        USGS_data = getUSGS_ts(sites, startDT, endDT)
+    #sites with a method_id or usgs tsid are retrieved from a seperate database. this is access using 3 as access in 
+    #usgs API call.
+    if len(method_sites) > 0:
+        USGS_data_method = getUSGS_ts(method_sites, startDT, endDT, 3)
+
+    CWMS_writeData(USGS_ts, USGS_data, USGS_data_method)
 
 
 if __name__ == "__main__":
