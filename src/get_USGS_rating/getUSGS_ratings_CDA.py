@@ -3,7 +3,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
-import json
+from json import loads
 import cwms
 from dataretrieval import nwis
 import requests
@@ -55,14 +55,15 @@ apiKey = "apikey " + APIKEY
 api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
 
 def get_rating_ids_from_specs(office_id):
-    #get all rating specs from and office and grab ratings with templates Stage;Flow.USGS-BASE, Stage;Flow.USGS-EXSA, 
-    #and Stage;Stage.USGS-CORR.
     rating_types = ['EXSA', 'CORR', 'BASE']
-    templates = ['Stage;Flow.USGS-BASE', 'Stage;Flow.USGS-EXSA', 'Stage;Stage.USGS-CORR']
     rating_specs = cwms.get_rating_specs(office_id=office_id).df
-    rating_specs = rating_specs[rating_specs['template-id'].isin(templates)]
+    rating_specs = rating_specs.dropna(subset=['description'])
     for rating_type in rating_types:
-        rating_specs.loc[rating_specs['template-id'].str.contains(f'USGS-{rating_type}'), 'rating-type'] = rating_type
+        rating_specs.loc[rating_specs['description'].str.contains(f'USGS-{rating_type}'), 'rating-type'] = rating_type
+    rating_specs = rating_specs[(
+        rating_specs['rating-type'].isin(rating_types)) & 
+        (rating_specs['active']==True) & 
+        (rating_specs['auto-update']==True)]
     return rating_specs
 
 def get_location_aliases(df, loc_group_id, category_id, office_id):
@@ -194,7 +195,22 @@ def cwms_write_ratings(updated_ratings):
                 try:
                     usgs_store_rating = convert_usgs_rating_df(usgs_rating,row['rating-type'])
                     #find out how to get units
-                    rating_json = cwms.rating_simple_df_to_json(data=usgs_store_rating,rating_id=row['rating-id'],office_id=row['office-id'],units=rating_units[row['rating-type']],effective_date=usgs_effective_date)
+                    if row['auto-migrate-extension']:
+                        current_rating = cwms.get_ratings(
+                                                rating_id=row['rating-id'],
+                                                office_id=row['office-id'],
+                                                begin=cwms_effective_date,
+                                                end=cwms_effective_date,
+                                                method="EAGER",
+                                                single_rating_df=True)
+                        rating_json = current_rating.json
+                        points_json = loads(usgs_store_rating.to_json(orient="records"))
+                        rating_json["simple-rating"]["rating-points"] = {"point": points_json}
+                        rating_json["simple-rating"]["effective-date"] = usgs_effective_date.isoformat()
+                        del rating_json["simple-rating"]["create-date"]
+                        rating_json["simple-rating"]["active"] = row['auto-activate']
+                    else:
+                        rating_json = cwms.rating_simple_df_to_json(data=usgs_store_rating,rating_id=row['rating-id'],office_id=row['office-id'],units=rating_units[row['rating-type']],effective_date=usgs_effective_date,active=row['auto-activate'])
                     response = cwms.update_ratings(data = rating_json, rating_id = row['rating-id'])
                     logger.info(f'SUCCESS Stored rating for rating id = {row["rating-id"]}, effective date = {usgs_effective_date}')
                     saved = saved + 1
