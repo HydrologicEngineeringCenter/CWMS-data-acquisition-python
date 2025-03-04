@@ -37,7 +37,7 @@ else:
 # Days back is defined as a argument to the program.
 # run program by typing python3 getUSGS.py 5
 # the 5 would mean grab data starting 5 days ago to now
-INI_FILENAME = float(args["filename"])
+INI_FILENAME = args["filename"]
 
 # import CWMS module and assign the apiROOT and apikey to be
 # used throughout the program

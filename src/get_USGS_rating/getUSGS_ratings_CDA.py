@@ -66,8 +66,13 @@ def get_rating_ids_from_specs(office_id):
         (rating_specs['auto-update']==True)]
     return rating_specs
 
-def get_location_aliases(df, loc_group_id, category_id, office_id):
-    Locdf = cwms.get_location_group(loc_group_id=loc_group_id,category_id=category_id,office_id=office_id).df
+def get_location_aliases(df, loc_group_id, category_id, office_id,category_office_id,group_office_id):
+    #CDA get location group endpoint has an error with category and group office ids.  need to update when error is fixed.
+    Locdf = cwms.get_location_group(loc_group_id=loc_group_id,
+                                    category_id=category_id,
+                                    office_id=office_id,
+                                    category_office_id=category_office_id,
+                                    group_office_id=group_office_id).df
     USGS_alias = Locdf[Locdf['alias-id'].notnull()]
     USGS_alias = USGS_alias.rename(columns = {'alias-id': 'USGS_St_Num','attribute':'Loc_attribute'})
     USGS_alias.USGS_St_Num = USGS_alias.USGS_St_Num.str.rjust(8,'0')
@@ -194,8 +199,8 @@ def cwms_write_ratings(updated_ratings):
             else:
                 try:
                     usgs_store_rating = convert_usgs_rating_df(usgs_rating,row['rating-type'])
-                    #find out how to get units
-                    if row['auto-migrate-extension']:
+                    
+                    if row['effective-dates'] and row['auto-migrate-extension']:
                         current_rating = cwms.get_ratings(
                                                 rating_id=row['rating-id'],
                                                 office_id=row['office-id'],
@@ -234,7 +239,7 @@ def main():
     
     logger.info(f"Get Rating Spec information from CWMS Database")
     rating_specs = get_rating_ids_from_specs(OFFICE)
-    USGS_ratings = get_location_aliases(rating_specs,"USGS Station Number","Agency Aliases","CWMS")
+    USGS_ratings = get_location_aliases(rating_specs,"USGS Station Number","Agency Aliases","CWMS",None,None)
     
     # grab ratings that don't have an existing rating curve.  ie new specs.
     USGS_ratings_empty = USGS_ratings[USGS_ratings['effective-dates'].isna()]
