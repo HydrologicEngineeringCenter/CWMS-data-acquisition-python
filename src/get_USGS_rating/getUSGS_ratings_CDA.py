@@ -3,7 +3,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
-import json
+from json import loads
 import cwms
 from dataretrieval import nwis
 import requests
@@ -55,18 +55,24 @@ apiKey = "apikey " + APIKEY
 api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
 
 def get_rating_ids_from_specs(office_id):
-    #get all rating specs from and office and grab ratings with templates Stage;Flow.USGS-BASE, Stage;Flow.USGS-EXSA, 
-    #and Stage;Stage.USGS-CORR.
     rating_types = ['EXSA', 'CORR', 'BASE']
-    templates = ['Stage;Flow.USGS-BASE', 'Stage;Flow.USGS-EXSA', 'Stage;Stage.USGS-CORR']
     rating_specs = cwms.get_rating_specs(office_id=office_id).df
-    rating_specs = rating_specs[rating_specs['template-id'].isin(templates)]
+    rating_specs = rating_specs.dropna(subset=['description'])
     for rating_type in rating_types:
-        rating_specs.loc[rating_specs['template-id'].str.contains(f'USGS-{rating_type}'), 'rating-type'] = rating_type
+        rating_specs.loc[rating_specs['description'].str.contains(f'USGS-{rating_type}'), 'rating-type'] = rating_type
+    rating_specs = rating_specs[(
+        rating_specs['rating-type'].isin(rating_types)) & 
+        (rating_specs['active']==True) & 
+        (rating_specs['auto-update']==True)]
     return rating_specs
 
-def get_location_aliases(df, loc_group_id, category_id, office_id):
-    Locdf = cwms.get_location_group(loc_group_id=loc_group_id,category_id=category_id,office_id=office_id).df
+def get_location_aliases(df, loc_group_id, category_id, office_id,category_office_id,group_office_id):
+    #CDA get location group endpoint has an error with category and group office ids.  need to update when error is fixed.
+    Locdf = cwms.get_location_group(loc_group_id=loc_group_id,
+                                    category_id=category_id,
+                                    office_id=office_id,
+                                    category_office_id=category_office_id,
+                                    group_office_id=group_office_id).df
     USGS_alias = Locdf[Locdf['alias-id'].notnull()]
     USGS_alias = USGS_alias.rename(columns = {'alias-id': 'USGS_St_Num','attribute':'Loc_attribute'})
     USGS_alias.USGS_St_Num = USGS_alias.USGS_St_Num.str.rjust(8,'0')
@@ -193,8 +199,23 @@ def cwms_write_ratings(updated_ratings):
             else:
                 try:
                     usgs_store_rating = convert_usgs_rating_df(usgs_rating,row['rating-type'])
-                    #find out how to get units
-                    rating_json = cwms.rating_simple_df_to_json(data=usgs_store_rating,rating_id=row['rating-id'],office_id=row['office-id'],units=rating_units[row['rating-type']],effective_date=usgs_effective_date)
+                    
+                    if row['effective-dates'] and row['auto-migrate-extension']:
+                        current_rating = cwms.get_ratings(
+                                                rating_id=row['rating-id'],
+                                                office_id=row['office-id'],
+                                                begin=cwms_effective_date,
+                                                end=cwms_effective_date,
+                                                method="EAGER",
+                                                single_rating_df=True)
+                        rating_json = current_rating.json
+                        points_json = loads(usgs_store_rating.to_json(orient="records"))
+                        rating_json["simple-rating"]["rating-points"] = {"point": points_json}
+                        rating_json["simple-rating"]["effective-date"] = usgs_effective_date.isoformat()
+                        del rating_json["simple-rating"]["create-date"]
+                        rating_json["simple-rating"]["active"] = row['auto-activate']
+                    else:
+                        rating_json = cwms.rating_simple_df_to_json(data=usgs_store_rating,rating_id=row['rating-id'],office_id=row['office-id'],units=rating_units[row['rating-type']],effective_date=usgs_effective_date,active=row['auto-activate'])
                     response = cwms.update_ratings(data = rating_json, rating_id = row['rating-id'])
                     logger.info(f'SUCCESS Stored rating for rating id = {row["rating-id"]}, effective date = {usgs_effective_date}')
                     saved = saved + 1
@@ -218,7 +239,7 @@ def main():
     
     logger.info(f"Get Rating Spec information from CWMS Database")
     rating_specs = get_rating_ids_from_specs(OFFICE)
-    USGS_ratings = get_location_aliases(rating_specs,"USGS Station Number","Agency Aliases","CWMS")
+    USGS_ratings = get_location_aliases(rating_specs,"USGS Station Number","Agency Aliases","CWMS",None,None)
     
     # grab ratings that don't have an existing rating curve.  ie new specs.
     USGS_ratings_empty = USGS_ratings[USGS_ratings['effective-dates'].isna()]

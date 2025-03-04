@@ -93,7 +93,11 @@ def get_CMWS_TS_Loc_Data(office):
     get time series group and location alias information and combine into singe dataframe
 
     """
-    df = cwms.get_timeseries_group(group_id="USGS TS Data Acquisition",category_id="Data Acquisition",office_id="CWMS").df
+    df = cwms.get_timeseries_group(group_id="USGS TS Data Acquisition",
+                                   category_id="Data Acquisition",
+                                   office_id=office,
+                                   category_office_id="CWMS",
+                                   group_office_id="CWMS").df
 
     df[["location-id", "param", "type", "int", "dur", "ver"]] = df[
         "timeseries-id"
@@ -107,7 +111,13 @@ def get_CMWS_TS_Loc_Data(office):
         df["attribute"] = np.nan
     df = df.rename(columns={"alias-id": "USGS_Method_TS"})
 
-    Locdf = cwms.get_location_group(loc_group_id="USGS Station Number",category_id="Agency Aliases",office_id="CWMS").df.set_index('location-id')
+    #error in CDA with category_office_id and group_office_id. need to fix once CDA is updated
+    Locdf = cwms.get_location_group(loc_group_id="USGS Station Number",
+                                    category_id="Agency Aliases", 
+                                    office_id="CWMS", 
+                                    category_office_id=None,
+                                    group_office_id=None).df.set_index('location-id')
+    
     Locdf = Locdf[Locdf["office-id"] == office]
     # Grab all of the locations that have a USGS station number assigned to them
     USGS_alias = Locdf[Locdf["alias-id"].notnull()]
