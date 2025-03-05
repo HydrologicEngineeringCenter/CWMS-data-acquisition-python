@@ -1,3 +1,7 @@
+#!/bin/env python3
+# This getUSGS script works with CDA version 20250305
+# and cwms-python version 0.6
+
 import pandas as pd
 import cwms
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter

@@ -1,4 +1,6 @@
 #!/bin/env python3
+# This getUSGS script works with CDA version 20250305.
+# and cwms-python version 0.6
 
 import logging
 import pandas as pd

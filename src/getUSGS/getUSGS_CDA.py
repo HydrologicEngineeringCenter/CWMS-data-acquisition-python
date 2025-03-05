@@ -1,4 +1,6 @@
 #!/bin/env python3
+# This getUSGS script works with CDA version 20250305.
+# and cwms-python version 0.6
 
 import logging
 import pandas as pd
@@ -114,9 +116,8 @@ def get_CMWS_TS_Loc_Data(office):
     #error in CDA with category_office_id and group_office_id. need to fix once CDA is updated
     Locdf = cwms.get_location_group(loc_group_id="USGS Station Number",
                                     category_id="Agency Aliases", 
-                                    office_id="CWMS", 
-                                    category_office_id=None,
-                                    group_office_id=None).df.set_index('location-id')
+                                    office_id="CWMS" 
+                                    ).df.set_index('location-id')
     
     Locdf = Locdf[Locdf["office-id"] == office]
     # Grab all of the locations that have a USGS station number assigned to them
