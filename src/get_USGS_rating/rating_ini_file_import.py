@@ -8,7 +8,7 @@ from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 import logging
 
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-parser.add_argument("-f", "--filename", default="1", help="Days back from current time to check for updated ratings.  Can be decimal and integer values")
+parser.add_argument("-f", "--filename", default="1", help="fileaname of ini file to be processed")
 parser.add_argument("-a", "--api_root", required=True, type=str, help="Api Root for CDA (Required).")
 parser.add_argument("-k", "--api_key", default=None, type=str, help="api key. one of api_key or api_key_loc are required")
 parser.add_argument("-kl", "--api_key_loc", default=None, type=str, help="file storing Api Key. One of api_key or api_key_loc are required")
