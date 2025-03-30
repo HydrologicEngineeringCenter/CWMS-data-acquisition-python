@@ -66,7 +66,8 @@ unitMapping = {"pcpn":"in",
     13:"in"
     }
 #missing value in CWMS
-missingValueCwms = -340282346638528859811704183484516925440
+cwms_missing_value = -340282346638528859811704183484516925440
+cwms_missing_quality = 5
 
 # create logger for logging
 logger = logging.getLogger()
@@ -152,7 +153,9 @@ def main():
                 #change trace flag to .001
                 d['value'] = d['value'].replace('T', str(0.001))
                 #change S flag to missing
-                d['value'] = d['value'].replace('S', str(missingValueCwms))
+                d['value'] = d['value'].replace('S', cwms_missing_value)
+                # set missing qualifier
+                d.loc[d['value'] == cwms_missing_value, 'quality-code'] = cwms_missing_quality
                 # Screen out A flag which is paired w/ S flag to signify a multiday total
                 d['value'] = d['value'].replace(r'[^0-9\.]', '', regex=True)
                 # assign timeseries id from mapping dictionary
