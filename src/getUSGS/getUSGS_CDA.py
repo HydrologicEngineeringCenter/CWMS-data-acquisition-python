@@ -120,6 +120,7 @@ def get_CMWS_TS_Loc_Data(office):
                                     ).df.set_index('location-id')
     
     Locdf = Locdf[Locdf["office-id"] == office]
+    if 'attribute' not in Locdf.columns: Locdf['attribute'] = np.nan
     # Grab all of the locations that have a USGS station number assigned to them
     USGS_alias = Locdf[Locdf["alias-id"].notnull()]
     # rename the columns
