@@ -95,6 +95,16 @@ def get_CMWS_TS_Loc_Data(office):
     get time series group and location alias information and combine into singe dataframe
 
     """
+
+    def find_usgsparam(attribute, param):
+        if attribute > 0:
+            usgs_param = str(attribute).split('.')[0]
+        elif param in USGS_Params.index:
+            usgs_param = USGS_Params.at[param, 'USGS_PARAMETER']
+        else:
+            usgs_param = 'Not Found'
+        return usgs_param
+
     df = cwms.get_timeseries_group(group_id="USGS TS Data Acquisition",
                                    category_id="Data Acquisition",
                                    office_id=office,
@@ -151,14 +161,10 @@ def get_CMWS_TS_Loc_Data(office):
     USGS_Params = get_USGS_params()
     # this code fills in the USGS_Params field with values in the Time Series Group Attribute if it exists.  If it does not exist it
     # grabs the default USGS paramter for the coresponding CWMS parameter
-    USGS_ts.attribute = USGS_ts.apply(
-        lambda x: np.where(
-            x.attribute > 0,
-            str(x.attribute).split(".")[0],
-            USGS_Params.at[x.param, "USGS_PARAMETER"],
-        ),
-        axis=1,
-    ).astype("string")
+
+    #USGS_ts.attribute = USGS_ts.apply(lambda x: np.where(x.attribute > 0, str(x.attribute).split('.')[0], USGS_Params.at[x.param, 'USGS_PARAMETER']), axis =1).astype("string")
+    USGS_ts.attribute = USGS_ts.apply(lambda x: find_usgsparam(x.attribute, x.param), axis =1).astype("string")
+    
     USGS_ts.attribute = USGS_ts.attribute.str.rjust(5, "0")
     # renames the attribute column to USGS_PARAMETER
     USGS_ts = USGS_ts.rename(columns={"attribute": "USGS_PARAMETER"})
