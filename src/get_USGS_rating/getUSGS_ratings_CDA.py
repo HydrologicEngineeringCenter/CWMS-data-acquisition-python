@@ -4,6 +4,7 @@
 
 import logging
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 from json import loads
 import cwms
@@ -59,6 +60,7 @@ api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
 def get_rating_ids_from_specs(office_id):
     rating_types = ['EXSA', 'CORR', 'BASE']
     rating_specs = cwms.get_rating_specs(office_id=office_id).df
+    if 'effective-dates' not in rating_specs.columns: rating_specs['effective-dates'] = np.nan
     rating_specs = rating_specs.dropna(subset=['description'])
     for rating_type in rating_types:
         rating_specs.loc[rating_specs['description'].str.contains(f'USGS-{rating_type}'), 'rating-type'] = rating_type
