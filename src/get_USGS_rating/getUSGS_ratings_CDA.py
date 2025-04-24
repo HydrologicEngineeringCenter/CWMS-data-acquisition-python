@@ -204,7 +204,7 @@ def cwms_write_ratings(updated_ratings):
                 try:
                     usgs_store_rating = convert_usgs_rating_df(usgs_rating,row['rating-type'])
                     
-                    if row['effective-dates'] and row['auto-migrate-extension']:
+                    if row['auto-migrate-extension'] and pd.notna(cwms_effective_date):
                         current_rating = cwms.get_ratings(
                                                 rating_id=row['rating-id'],
                                                 office_id=row['office-id'],
