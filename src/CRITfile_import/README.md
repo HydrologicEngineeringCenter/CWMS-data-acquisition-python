@@ -1,0 +1,1 @@
+python3 shef_critfile_import.py -f CEMVP_GOES.crit -o MVP -a $CWBI_TEST_API_ROOT -kl $CWMS_HOME/.cwms/cwbi_test_api_key
