@@ -238,13 +238,13 @@ def CWMS_writeData(USGS_ts, USGS_data, USGS_data_method):
             f"Attempting to write values for ts_id -->  {ts_id},{USGS_Id_param}"
         )
         values = pd.DataFrame()
-        if (USGS_Id_param in USGS_data.index) or (
-            USGS_Id_param in USGS_data_method.index
-        ):
-            if pd.isna(row.USGS_Method_TS):
-                USGS_data_row = USGS_data.loc[USGS_Id_param]
-            else:
-                USGS_data_row = USGS_data_method.loc[USGS_Id_param]
+        USGS_data_row = None
+        if (USGS_Id_param in USGS_data.index) and pd.isna(row.USGS_Method_TS):
+            USGS_data_row = USGS_data.loc[USGS_Id_param]
+        elif (USGS_Id_param in USGS_data_method.index):
+            USGS_data_row = USGS_data_method.loc[USGS_Id_param]
+        if USGS_data_row is not None:
+            try:
 
             # grab the time series values obtained from USGS API.
             values_df = pd.DataFrame(USGS_data_row["values"])
@@ -316,6 +316,10 @@ def CWMS_writeData(USGS_ts, USGS_data, USGS_data_method):
                         logging.error(
                             f"FAIL Data could not be stored to CWMS database for -->  {ts_id},{USGS_Id_param} CDA error = {error}"
                         )
+            except Exception as error:
+                logging.error(
+                                f"FAIL Unspecified Error when trying to save USGS data -->  {ts_id},{USGS_Id_param} error = {error}"
+                            )  
         else:
             NotinAPI.append([ts_id, USGS_Id_param])
             logging.warning(
