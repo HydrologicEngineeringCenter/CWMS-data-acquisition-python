@@ -335,7 +335,7 @@ def cwms_write_ratings(updated_ratings):
     )    
     if len(saved_ratings) > 0:
         logging.info(
-            f"A total of {saved} ratings were new and saved successfully to the database: {saved_ratings}"
+            f"A total of {saved} ratings were new and saved successfully to the database"
         )   
         logging.info(
             f"Rating ids saved successfully to the database were: {saved_ratings}"
