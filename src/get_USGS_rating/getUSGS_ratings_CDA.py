@@ -31,12 +31,12 @@ def getusgs_rating_cda(api_root, office_id, days_back, api_key):
     cwms.api.init_session(api_root=api_root, api_key=api_key)
     logging.info(f"CDA connection: {api_root}")
     logging.info(
-        f"Updated Ratings will be check from the USGS for the past {days_back} days"
+        f"Updated Ratings will be obtained from the USGS for the past {days_back} days"
     )
     execution_date = datetime.now()
     logging.info(f"Execution date {execution_date}")
 
-    logging.info("Get Rating Spec information from CWMS Database")
+    logging.info("Getting Rating Specification information from CWMS Database")
     rating_specs = get_rating_ids_from_specs(office_id)
     USGS_ratings = get_location_aliases(
         rating_specs, "USGS Station Number", "Agency Aliases", "CWMS", None, None
@@ -46,7 +46,7 @@ def getusgs_rating_cda(api_root, office_id, days_back, api_key):
     USGS_ratings_empty = USGS_ratings[USGS_ratings["effective-dates"].isna()]
     USGS_ratings = USGS_ratings[USGS_ratings["effective-dates"].notna()]
 
-    logging.info(f"Get list of ratings updated by USGS in past {days_back} days")
+    logging.info(f"Getting list of ratings updated by USGS in past {days_back} days")
     df = get_usgs_updated_ratings(days_back * 24)
 
     updated_ratings = pd.merge(
@@ -218,6 +218,7 @@ def cwms_write_ratings(updated_ratings):
     usgseffectiveErr = []
     total_recs = len(updated_ratings.index)
     saved = 0
+    saved_ratings = []
     same_effective = 0
 
     rating_units = {"EXSA": "ft;cfs", "BASE": "ft;cfs", "CORR": "ft;ft"}
@@ -311,6 +312,9 @@ def cwms_write_ratings(updated_ratings):
                         f'SUCCESS Stored rating for rating id = {row["rating-id"]}, effective date = {usgs_effective_date}'
                     )
                     saved = saved + 1
+                    saved_ratings.append(
+                        [row["rating-id"], row["USGS_St_Num"], row["rating-type"]]
+                    )
                 except Exception as error:
                     storErr.append(
                         [
@@ -324,8 +328,18 @@ def cwms_write_ratings(updated_ratings):
                         f'FAIL Data could not be stored to CWMS database for -->  {row["rating-id"]},{row["USGS_St_Num"]}, {row["rating-type"]} CDA error = {error}'
                     )
     logging.info(
-        f"A total of {same_effective + saved} out of {total_recs} records were successfully saved or had same effective date in cwms"
-    )
+        f"A total of {total_recs} ratings were updated by the USGS over the lookback period."
+    ) 
+    logging.info(
+        f"Of those {total_recs} ratings {same_effective} were already stored in the CWMS database"
+    )    
+    if len(saved_ratings) > 0:
+        logging.info(
+            f"A total of {saved} ratings were new and saved successfully to the database: {saved_ratings}"
+        )   
+        logging.info(
+            f"Rating ids saved successfully to the database were: {saved_ratings}"
+        )             
     if len(usgsapiErr) > 0:
         logging.info(
             f"The following ratings errored out when accessing the USGS API: {usgsapiErr}"
