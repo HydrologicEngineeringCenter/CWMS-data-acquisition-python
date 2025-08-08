@@ -1,5 +1,5 @@
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pytz
 import math
 import numpy as np
@@ -310,6 +310,15 @@ def check_single_row_for_duplicates(row_to_check, df_existing):
 
     df_store_compare = df_store_internal.copy()
     df_existing_compare = df_existing.copy()
+    
+    # cast number columns as int, sometimes USGS won't resolve to int...drop those rows
+    df_invalid = df_store_compare[pd.to_numeric(df_store_compare['number'], errors='coerce').isna()]
+    if not df_invalid.empty:
+        logger.info(f"Can't resolve measurement numbers {df_invalid['number'].values} to number. Won't store those measurements")
+
+    # Convert the valid rows to numeric and drop the invalid ones
+    df_store_compare['number'] = pd.to_numeric(df_store_compare['number'], errors='coerce')  # Convert to numeric, coercing errors to NaN
+    df_store_compare = df_store_compare.dropna(subset=['number'])  # Drop rows where 'number' is NaN
 
     df_store_compare["number"] = df_store_compare["number"].astype(int)
     df_existing_compare["number"] = df_existing_compare["number"].astype(int)
@@ -412,7 +421,7 @@ def create_json_from_row(row):
         ),  # Ensure proper bool conversion
         "agency": str(row["agency"]),
         "party": str(row["party"]),
-        "wm-comments": "imported from get_usgs_measurements",
+        "wm-comments": f"imported from get_USGS_measurements.py {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}",
         "instant": instant_value,
         "id": {"office-id": str(row["office"]), "name": str(row["name"])},
         "number": str(row["number"]),
@@ -582,7 +591,7 @@ logger.info(
     f"Fetching USGS discharge measurements from {startDT.isoformat()} (modified in last {DAYS_BACK_MODIFIED} days)..."
 )
 try:
-    # Example sites, consider making these configurable
+
     df_meas_usgs, meta = nwis.get_discharge_measurements(
         # sites=["05058000", "05059500"],
         period=f"P{DAYS_BACK_COLLECTED}D",
@@ -687,7 +696,7 @@ for index, usgs_row in df_meas_usgs.iterrows():
                             f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
                         )
                 except requests.exceptions.RequestException as e:
-                    # If fail_if_exists is True (default), a 409 Conflict would be a RequestException.
+                    # If fail_if_exists is True (default)
                     logger.warning(
                         f"CWMS API network error (likely duplicate or conflict) storing {log_prefix}: {e}"
                     )
@@ -703,7 +712,7 @@ for index, usgs_row in df_meas_usgs.iterrows():
                 office_store_stats[office_id][
                     "rejected"
                 ] += 1  # Increment rejected for this office
-    # --- END MODIFIED inner loop ---
+
 
 logger.info("-" * 50)
 logger.info("Processing Summary:")
