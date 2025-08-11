@@ -199,8 +199,11 @@ def clean_data(df):
         pd.DataFrame: The cleaned DataFrame.
     """
     df_cleaned = df.copy()
+    dropped = 0
 
     if "used" in df_cleaned.columns:
+        dropped = len(df_cleaned[df_cleaned["used"] == True])
+        logger.info(f"Dropping {dropped} measurements flagged as not used")
         df_cleaned.loc[:, "used"] = (
             df_cleaned["used"].map({"Yes": True, "No": False}).astype(pd.BooleanDtype())
         )
@@ -209,7 +212,7 @@ def clean_data(df):
     numeric_cols = df_cleaned.select_dtypes(include=np.number).columns
 
     if not string_cols.empty:
-        df_cleaned[string_cols] = df_cleaned[string_cols].replace(np.nan, "")
+        df_cleaned[string_cols] = df_cleaned[string_cols].astype("string").fillna("")
     if not numeric_cols.empty:
         df_cleaned[numeric_cols] = df_cleaned[numeric_cols].fillna(pd.NA)
 
@@ -221,7 +224,7 @@ def clean_data(df):
             "Only one of 'flow' or 'gage-height' columns exists. Cannot perform combined NaN drop."
         )
 
-    return df_cleaned
+    return df_cleaned, dropped
 
 
 def process_usgs_data(df: pd.DataFrame) -> pd.DataFrame:
@@ -241,9 +244,9 @@ def process_usgs_data(df: pd.DataFrame) -> pd.DataFrame:
 
     df_processed = convert_to_utc(df_processed)
     df_processed = rename_and_drop_columns(df_processed)
-    df_processed = clean_data(df_processed)
+    df_processed, dropped = clean_data(df_processed)
 
-    return df_processed
+    return df_processed, dropped
 
 
 def remove_nan_values(data):
@@ -310,15 +313,23 @@ def check_single_row_for_duplicates(row_to_check, df_existing):
 
     df_store_compare = df_store_internal.copy()
     df_existing_compare = df_existing.copy()
-    
+
     # cast number columns as int, sometimes USGS won't resolve to int...drop those rows
-    df_invalid = df_store_compare[pd.to_numeric(df_store_compare['number'], errors='coerce').isna()]
+    df_invalid = df_store_compare[
+        pd.to_numeric(df_store_compare["number"], errors="coerce").isna()
+    ]
     if not df_invalid.empty:
-        logger.info(f"Can't resolve measurement numbers {df_invalid['number'].values} to number. Won't store those measurements")
+        logger.info(
+            f"Can't resolve measurement numbers {df_invalid['number'].values} to number. Won't store those measurements"
+        )
 
     # Convert the valid rows to numeric and drop the invalid ones
-    df_store_compare['number'] = pd.to_numeric(df_store_compare['number'], errors='coerce')  # Convert to numeric, coercing errors to NaN
-    df_store_compare = df_store_compare.dropna(subset=['number'])  # Drop rows where 'number' is NaN
+    df_store_compare["number"] = pd.to_numeric(
+        df_store_compare["number"], errors="coerce"
+    )  # Convert to numeric, coercing errors to NaN
+    df_store_compare = df_store_compare.dropna(
+        subset=["number"]
+    )  # Drop rows where 'number' is NaN
 
     df_store_compare["number"] = df_store_compare["number"].astype(int)
     df_existing_compare["number"] = df_existing_compare["number"].astype(int)
@@ -401,6 +412,72 @@ def check_single_row_for_duplicates(row_to_check, df_existing):
     return original_input_for_return, is_rejected, df_differences
 
 
+def check_and_drop_duplicates(df_store, df_existing):
+    """
+    Checks for duplicates based on "number" and "instant" columns and drops them.
+
+    Args:
+        df_renamed: The DataFrame to check for duplicates and modify.
+        df_existing: The DataFrame to compare against.
+
+    Returns:
+        A tuple containing:
+            - df_renamed: The modified DataFrame with duplicates removed.
+            - df_rejected_number: DataFrame containing rows rejected due to duplicate "number".
+            - df_rejected_instant: DataFrame containing rows rejected due to "instant" within 5 minutes of existing.
+    """
+
+    if not df_existing.empty:
+
+        # cast number columns as int, sometimes USGS won't resolve to int...drop those rows
+        df_invalid = df_store[pd.to_numeric(df_store["number"], errors="coerce").isna()]
+        if not df_invalid.empty:
+            print(
+                f"Can't resolve measurement numbers {df_invalid['number'].values} to number. Won't store those measurements"
+            )
+
+        # Convert the valid rows to numeric and drop the invalid ones
+        df_store["number"] = pd.to_numeric(
+            df_store["number"], errors="coerce"
+        )  # Convert to numeric, coercing errors to NaN
+        df_store = df_store.dropna(subset=["number"])  # Drop rows where 'number' is NaN
+
+        # Convert the 'number' column to str
+        df_store.loc[:, "number"] = df_store["number"].astype(str)
+
+        # Ensure 'instant' columns are datetime objects
+        df_store["instant"] = pd.to_datetime(df_store["instant"])
+        df_existing["instant"] = pd.to_datetime(df_existing["instant"])
+
+        # Check for duplicate numbers
+        mask_number = df_store["number"].isin(df_existing["number"])
+        df_rejected_number = df_store[mask_number].copy()  # Store rejected rows
+        df_store = df_store[~mask_number]  # Remove duplicates from df_store
+
+        # Check for instants within 5 minutes
+
+        df_rejected_instant = pd.DataFrame(columns=df_store.columns)  # Initialize
+
+        indices_to_drop = []  # Keep track of indices to drop efficiently
+
+        for index, row in df_store.iterrows():
+            # Find closest time in df_existing
+            closest_time = df_existing["instant"].iloc[
+                (df_existing["instant"] - row["instant"]).abs().argsort()[:1]
+            ]
+
+            # Check if time difference is within 5 minutes (300 seconds)
+            if abs((closest_time.iloc[0] - row["instant"]).total_seconds()) <= 300:
+                df_rejected_instant = pd.concat([df_rejected_instant, row.to_frame().T])
+                indices_to_drop.append(index)
+
+        df_store = df_store.drop(indices_to_drop)
+
+        return df_store, df_rejected_number, df_rejected_instant
+    else:
+        return df_store, pd.DataFrame(), pd.DataFrame()
+
+
 def create_json_from_row(row):
     """
     Transforms a DataFrame row into the specified JSON format.
@@ -419,7 +496,11 @@ def create_json_from_row(row):
         "used": (
             bool(row["used"]) if pd.notna(row["used"]) else False
         ),  # Ensure proper bool conversion
-        "agency": str(row["agency"]),
+        "agency": ("USGS" 
+                    if "unsp" in str(row["agency"]).lower()
+                    else str(row["agency"])
+        ),
+
         "party": str(row["party"]),
         "wm-comments": f"imported from get_USGS_measurements.py {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}",
         "instant": instant_value,
@@ -438,10 +519,14 @@ def create_json_from_row(row):
         },
         "usgs-measurement": {
             "control-condition": (
-                str(row["control-condition"])
+                "Unspecified"
                 if pd.notna(row["control-condition"])
-                and row["control-condition"] != "Unspecified"  # Corrected typo
-                else None
+                and "unsp" in row["control-condition"].lower()
+                else (
+                    str(row["control-condition"])
+                    if pd.notna(row["control-condition"])
+                    else None
+                )
             ),
             "flow-adjustment": str(row["flow-adjustment"]),
             "delta-height": (
@@ -460,6 +545,371 @@ def create_json_from_row(row):
     # Apply the recursive NaN remover once at the end
     json_data = remove_nan_values(json_data)
     return json_data
+
+
+def realtime_mode():
+    execution_date = datetime.now()
+    startDT = execution_date - timedelta(DAYS_BACK_COLLECTED)
+
+    logger.info(
+        f"Fetching USGS discharge measurements from {startDT.isoformat()} (modified in last {DAYS_BACK_MODIFIED} days)..."
+    )
+    try:
+
+        df_meas_usgs, meta = nwis.get_discharge_measurements(
+            # sites=["05058000", "05059500"],
+            period=f"P{DAYS_BACK_COLLECTED}D",
+            channel_rdb_info="1",
+            sv_md_interval="DAY",
+            sv_md=f"{DAYS_BACK_MODIFIED}",
+            sv_md_minutes="2",
+        )
+        logger.info(f"Queried {meta}")
+    except Exception as e:
+        logger.critical(f"Failed to fetch USGS measurements: {e}. Exiting.")
+        exit(1)
+
+    if df_meas_usgs.empty:
+        logger.info("No new USGS measurements found to process.")
+        exit(0)
+
+    logger.info(f"Processing {len(df_meas_usgs)} USGS measurements...")
+    df_meas_usgs, dropped = process_usgs_data(df_meas_usgs)
+    total_usgs_measurements_processed = 0
+    total_usgs_measurements_skipped_no_cwms_mapping = 0
+
+    # This will store stats like: {'office_id_MVP': {'attempted': X, 'successful': Y, 'rejected': Z}}
+    office_store_stats = defaultdict(lambda: defaultdict(int))
+    for index, usgs_row in df_meas_usgs.iterrows():
+        total_usgs_measurements_processed += 1
+        site_no = usgs_row.usgs_site_no
+
+        if site_no not in cwms_site_lookup:
+            # logger.warning(
+            #     f"USGS site '{site_no}' not found in CWMS lookup. Skipping measurement collected at {usgs_row.instant}."
+            # )
+            total_usgs_measurements_skipped_no_cwms_mapping += 1
+            continue
+
+        # Iterate over all CWMS configurations for this USGS site ---
+        cwms_configs_for_site = cwms_site_lookup[site_no]
+        for config_idx, cwms_config in enumerate(cwms_configs_for_site):
+            cwms_loc = cwms_config["location-id"]
+            office_id = cwms_config["office-id_x"]  # Get the office_id for this config
+            overwrite_flag = cwms_config[
+                "attribute_x"
+            ]  # Assuming 1 means overwrite, 0 means don't overwrite
+
+            # Create a copy of the row for JSON creation and modification
+            usgs_row_for_json = usgs_row.copy()
+            usgs_row_for_json["name"] = cwms_loc
+            usgs_row_for_json["office"] = office_id
+
+            data = create_json_from_row(usgs_row_for_json)
+            office_store_stats[office_id][
+                "attempted"
+            ] += 1  # Increment attempted for this office
+
+            # get existing measurements at site
+            df_existing = pd.DataFrame()  # Initialize as empty
+            try:
+                existing_measurements = cwms.get_measurements(
+                    location_id_mask=cwms_loc, office_id=office_id
+                )
+                if existing_measurements and existing_measurements.df is not None:
+                    df_existing = existing_measurements.df
+            except Exception as e:
+                logger.error(
+                    f"An unexpected error occurred while getting existing measurements for {cwms_loc} ({office_id}). Assuming no existing measurements."
+                )
+
+            _, is_rejected, df_differences = check_single_row_for_duplicates(
+                usgs_row_for_json, df_existing
+            )
+
+            log_prefix = f"USGS site {site_no} -> CWMS loc {cwms_loc} ({office_id}) measurement collected at {usgs_row.instant}"
+
+            if overwrite_flag == 1:
+                try:
+                    logger.info(f"{log_prefix} (overwrite enabled). Storing.")
+                    cwms.store_measurements(data=[data], fail_if_exists=False)
+                    office_store_stats[office_id][
+                        "successful"
+                    ] += 1  # Increment successful for this office
+                    if not df_differences.empty:
+                        logger.info(
+                            f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
+                        )
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"CWMS API network error storing {log_prefix}: {e}")
+                    # For overwrite enabled, if it fails, it's an error, not a 'rejection' due to existing data
+                except Exception as e:
+                    logger.error(f"Unexpected error storing {log_prefix}: {e}")
+            else:  # overwrite_flag is 0 or some other value, meaning don't overwrite
+                if not is_rejected:
+                    try:
+                        logger.info(f"{log_prefix}. Storing.")
+                        cwms.store_measurements(
+                            data=[data]
+                        )  # fail_if_exists=True by default
+                        office_store_stats[office_id][
+                            "successful"
+                        ] += 1  # Increment successful for this office
+                        if not df_differences.empty:
+                            logger.info(
+                                f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
+                            )
+                    except requests.exceptions.RequestException as e:
+                        # If fail_if_exists is True (default)
+                        logger.warning(
+                            f"CWMS API network error (likely duplicate or conflict) storing {log_prefix}: {e}"
+                        )
+                        office_store_stats[office_id][
+                            "rejected"
+                        ] += 1  # Increment rejected for this office
+                    except Exception as e:
+                        logger.error(f"Unexpected error storing {log_prefix}: {e}")
+                else:
+                    logger.warning(
+                        f"{log_prefix} has same number field ({usgs_row.number}) or similar collection time as existing measurement. Not storing."
+                    )
+                    office_store_stats[office_id][
+                        "rejected"
+                    ] += 1  # Increment rejected for this office
+
+    logger.info("-" * 50)
+    logger.info("Processing Summary:")
+    logger.info(f"Total USGS measurements fetched: {len(df_meas_usgs)}")
+    logger.info(
+        f"Total unique USGS measurements processed for CWMS: {total_usgs_measurements_processed}"
+    )
+    logger.info(
+        f"Total USGS measurements skipped (no CWMS mapping): {total_usgs_measurements_skipped_no_cwms_mapping}"
+    )
+
+    logger.info("\nCWMS Store Statistics Per Office:")
+    # Calculate global totals from office_store_stats for consistency
+    global_attempted = sum(stats["attempted"] for stats in office_store_stats.values())
+    global_successful = sum(
+        stats["successful"] for stats in office_store_stats.values()
+    )
+    global_rejected = sum(stats["rejected"] for stats in office_store_stats.values())
+
+    for office, stats in sorted(office_store_stats.items()):
+        logger.info(f"  Office: {office}")
+        logger.info(f"    Attempted: {stats['attempted']}")
+        logger.info(f"    Successful: {stats['successful']}")
+        logger.info(f"    Rejected (Duplicate/Conflict): {stats['rejected']}")
+
+    logger.info("\nOverall CWMS Store Statistics:")
+    logger.info(
+        f"Total CWMS store attempts (across all configurations): {global_attempted}"
+    )
+    logger.info(f"Total CWMS stores successful: {global_successful}")
+    logger.info(f"Total CWMS stores rejected (duplicate/conflict): {global_rejected}")
+    logger.info("-" * 50)
+    pass
+
+
+def backfill_mode(BACKFILL_LIST):
+    # Initialize summary tracking dictionaries
+    site_summary = {}  # Will store stats for each site
+    overall_failed_stores = []  # Will store all failed measurement details
+
+    for usgs_site in BACKFILL_LIST:
+        # Initialize site-specific counters
+        site_stats = {
+            "measurements_fetched": 0,
+            "measurements_saved": 0,
+            "measurements_failed": 0,
+            "failed_details": [],
+        }
+
+        cwms_loc = measurement_site_df[measurement_site_df["alias-id"] == usgs_site][
+            "location-id"
+        ].values[0]
+        overwrite_code = int(
+            measurement_site_df[measurement_site_df["alias-id"] == usgs_site][
+                "attribute_x"
+            ].values[0]
+        )
+        logger.info(
+            f"Fetching USGS POR discharge measurements for {usgs_site} {cwms_loc})..."
+        )
+        try:
+            df_meas_usgs, meta = nwis.get_discharge_measurements(
+                sites=[usgs_site],
+                channel_rdb_info="1",
+            )
+            logger.info(f"Queried {meta}")
+            site_stats["measurements_fetched"] = len(df_meas_usgs)
+        except Exception as e:
+            logger.critical(f"Failed to fetch USGS measurements: {e}. Exiting.")
+            df_meas_usgs = pd.DataFrame()
+
+
+        if df_meas_usgs.empty:
+            logger.info("No new USGS measurements found to process.")
+            site_summary[f"{usgs_site} ({cwms_loc})"] = site_stats
+            continue  # Continue to next site instead of exiting
+
+        logger.info(f"Processing {len(df_meas_usgs)} USGS measurements...")
+        df_meas_usgs, dropped = process_usgs_data(df_meas_usgs)
+
+        # This will store stats like: {'office_id_MVP': {'attempted': X, 'successful': Y, 'rejected': Z}}
+        office_store_stats = defaultdict(lambda: defaultdict(int))
+
+        df_meas_usgs["location-id"] = df_meas_usgs["name"] = cwms_loc
+        df_meas_usgs["office"] = OFFICE
+
+        log_prefix = (
+            f"USGS site {usgs_site} -> CWMS loc {cwms_loc} ({OFFICE}) POR measurements"
+        )
+
+        # get existing measurements at site
+        df_existing = pd.DataFrame()  # Initialize as empty
+        try:
+            existing_measurements = cwms.get_measurements(
+                location_id_mask=cwms_loc, office_id=OFFICE
+            )
+            if existing_measurements and existing_measurements.df is not None:
+                df_existing = existing_measurements.df
+        except Exception as e:
+            logger.error(
+                f"An unexpected error occurred while getting existing measurements for {cwms_loc} ({OFFICE}). Assuming no existing measurements."
+            )
+        if overwrite_code != 1:
+            logger.info(
+                "Overwrite flag is off. Filtering out any conflicting measurements"
+            )
+            df_store, df_rejected_number, df_rejected_instant = (
+                check_and_drop_duplicates(df_meas_usgs, df_existing)
+            )
+
+            if not df_rejected_number.empty:
+                logger.info(
+                    f"The following measurements were rejected because of duplicate measurement numbers {df_rejected_number}"
+                )
+            if not df_rejected_instant.empty:
+                logger.info(
+                    f"The following measurements were rejected because of duplicate measurement numbers {df_rejected_instant}"
+                )
+        else:
+            df_store = df_meas_usgs.copy()
+
+        json_list = []
+        for _, usgs_row in df_store.iterrows():
+            json_list.append(create_json_from_row(usgs_row))
+
+        # store the measurement
+        try:
+            logger.info(f"{log_prefix} Storing.")
+            cwms.store_measurements(data=json_list, fail_if_exists=False)
+            logger.info("-" * 50)
+            office_store_stats[OFFICE]["successful"] += 1
+            site_stats["measurements_saved"] = len(json_list)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"CWMS API network error storing {log_prefix}: {e}")
+            # Track the bulk failure
+            site_stats["measurements_failed"] = len(json_list)
+            for data in json_list:
+                failure_detail = {
+                    "site": f"{usgs_site} ({cwms_loc})",
+                    "measurement_number": data.get("number", "Unknown"),
+                    "instant": data.get("instant", "Unknown"),
+                    "error": f"Network error: {e}",
+                }
+                site_stats["failed_details"].append(failure_detail)
+                overall_failed_stores.append(failure_detail)
+        except Exception as e:
+            logger.error(f"Unexpected error storing {log_prefix}: {e}")
+            logger.info("Storing one measurement at a time")
+
+            measurements_saved_individually = 0
+            measurements_failed_individually = 0
+
+            for data in json_list:
+                try:
+                    cwms.store_measurements(data=[data], fail_if_exists=False)
+                    measurements_saved_individually += 1
+                except Exception as individual_error:
+                    measurements_failed_individually += 1
+                    inst = data.get("instant", "Unknown")
+                    number = data.get("number", "Unknown")
+                    logger.error(
+                        f"Could not store measurement {number} collected at {inst} at {cwms_loc}"
+                    )
+
+                    failure_detail = {
+                        "site": f"{usgs_site} ({cwms_loc})",
+                        "measurement_number": number,
+                        "instant": inst,
+                        "error": str(individual_error),
+                    }
+                    site_stats["failed_details"].append(failure_detail)
+                    overall_failed_stores.append(failure_detail)
+
+            site_stats["measurements_saved"] = measurements_saved_individually
+            site_stats["measurements_failed"] = measurements_failed_individually
+
+        # Store site summary
+        site_summary[f"{usgs_site} ({cwms_loc})"] = site_stats
+
+        logger.info("Processing Summary for this site:")
+        logger.info(
+            f"Total USGS measurements fetched: {site_stats['measurements_fetched']}"
+        )
+        logger.info(f"Total measurements saved: {site_stats['measurements_saved']}")
+        logger.info(f"Total measurements failed: {site_stats['measurements_failed']}")
+
+    # Print overall processing summary
+    logger.info("=" * 60)
+    logger.info("OVERALL PROCESSING SUMMARY")
+    logger.info("=" * 60)
+
+    # Summary by site
+    logger.info("MEASUREMENTS SAVED BY SITE:")
+    logger.info("-" * 40)
+    total_saved_all_sites = 0
+    total_failed_all_sites = 0
+
+    for site_name, stats in site_summary.items():
+        logger.info(f"{site_name}:")
+        logger.info(f"  - Fetched: {stats['measurements_fetched']}")
+        logger.info(f"  - Saved: {stats['measurements_saved']}")
+        logger.info(f"  - Failed: {stats['measurements_failed']}")
+        total_saved_all_sites += stats["measurements_saved"]
+        total_failed_all_sites += stats["measurements_failed"]
+        logger.info("")
+
+    logger.info(f"TOTAL MEASUREMENTS SAVED ACROSS ALL SITES: {total_saved_all_sites}")
+    logger.info(f"TOTAL MEASUREMENTS FAILED ACROSS ALL SITES: {total_failed_all_sites}")
+
+    # Summary of failed measurements
+    if overall_failed_stores:
+        logger.info("")
+        logger.info("FAILED MEASUREMENT STORES SUMMARY:")
+        logger.info("-" * 40)
+        logger.info(f"Total failed measurements: {len(overall_failed_stores)}")
+
+        # Group failures by site
+        failures_by_site = defaultdict(list)
+        for failure in overall_failed_stores:
+            failures_by_site[failure["site"]].append(failure)
+
+        for site, failures in failures_by_site.items():
+            logger.info(f"\n{site} - {len(failures)} failed measurements:")
+            for failure in failures[:5]:  # Show first 5 failures per site
+                logger.info(
+                    f"  - Measurement {failure['measurement_number']} at {failure['instant']}"
+                )
+            if len(failures) > 5:
+                logger.info(f"  - ... and {len(failures) - 5} more failures")
+    else:
+        logger.info("")
+        logger.info("No failed measurement stores!")
+
+    logger.info("=" * 60)
 
 
 # --- Main Script Execution ---
@@ -488,7 +938,11 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    "-a", "--api_root", required=False, type=str, help="Api Root for CDA. If not provided, will read from environment."
+    "-a",
+    "--api_root",
+    required=False,
+    type=str,
+    help="Api Root for CDA. If not provided, will read from environment.",
 )
 parser.add_argument(
     "-k",
@@ -498,9 +952,25 @@ parser.add_argument(
     help="api key. If not provided, will read from environment.",
 )
 
+parser.add_argument(
+    "-b",
+    "--backfill",
+    default=None,
+    type=str,
+    help="Backfill POR data, use list of USGS IDs (e.g. 05057200, 05051300) or the word 'group' to attempt to backfill all sites in the OFFICE id's Data Acquisition->USGS Measurements group",
+)
+
 args = parser.parse_args()
 DAYS_BACK_MODIFIED = int(args.days_back_modified)
 DAYS_BACK_COLLECTED = int(args.days_back_collected)
+BACKFILL_GROUP = False
+BACKFILL_LIST = False
+if args.backfill is not None:
+    if "group" in args.backfill:
+        BACKFILL_GROUP = True
+    elif type(args.backfill) == str:
+        BACKFILL_LIST = args.backfill.replace(" ", "").split(",")
+
 
 # grab API variables from .env file
 load_dotenv()
@@ -582,164 +1052,11 @@ for alias_id, configs in cwms_site_lookup.items():
         logger.info(
             f"USGS alias-id '{alias_id}' maps to multiple CWMS configurations: {[(c['location-id'], c['office-id_x']) for c in configs]}"
         )
+# backfilling entire group get list of USGS ids to backfill
+if BACKFILL_GROUP:
+    BACKFILL_LIST = list(measurement_site_df["alias-id"].values)
 
-
-execution_date = datetime.now()
-startDT = execution_date - timedelta(DAYS_BACK_COLLECTED)
-
-logger.info(
-    f"Fetching USGS discharge measurements from {startDT.isoformat()} (modified in last {DAYS_BACK_MODIFIED} days)..."
-)
-try:
-
-    df_meas_usgs, meta = nwis.get_discharge_measurements(
-        # sites=["05058000", "05059500"],
-        period=f"P{DAYS_BACK_COLLECTED}D",
-        channel_rdb_info="1",
-        sv_md_interval="DAY",
-        sv_md=f"{DAYS_BACK_MODIFIED}",
-        sv_md_minutes="2",
-    )
-    logger.info(f"Queried {meta}")
-except Exception as e:
-    logger.critical(f"Failed to fetch USGS measurements: {e}. Exiting.")
-    exit(1)
-
-if df_meas_usgs.empty:
-    logger.info("No new USGS measurements found to process.")
-    exit(0)
-
-logger.info(f"Processing {len(df_meas_usgs)} USGS measurements...")
-df_meas_usgs = process_usgs_data(df_meas_usgs)
-total_usgs_measurements_processed = 0
-total_usgs_measurements_skipped_no_cwms_mapping = 0
-
-# This will store stats like: {'office_id_MVP': {'attempted': X, 'successful': Y, 'rejected': Z}}
-office_store_stats = defaultdict(lambda: defaultdict(int))
-for index, usgs_row in df_meas_usgs.iterrows():
-    total_usgs_measurements_processed += 1
-    site_no = usgs_row.usgs_site_no
-
-    if site_no not in cwms_site_lookup:
-        # logger.warning(
-        #     f"USGS site '{site_no}' not found in CWMS lookup. Skipping measurement collected at {usgs_row.instant}."
-        # )
-        total_usgs_measurements_skipped_no_cwms_mapping += 1
-        continue
-
-    # Iterate over all CWMS configurations for this USGS site ---
-    cwms_configs_for_site = cwms_site_lookup[site_no]
-    for config_idx, cwms_config in enumerate(cwms_configs_for_site):
-        cwms_loc = cwms_config["location-id"]
-        office_id = cwms_config["office-id_x"]  # Get the office_id for this config
-        overwrite_flag = cwms_config[
-            "attribute_x"
-        ]  # Assuming 1 means overwrite, 0 means don't overwrite
-
-        # Create a copy of the row for JSON creation and modification
-        usgs_row_for_json = usgs_row.copy()
-        usgs_row_for_json["name"] = cwms_loc
-        usgs_row_for_json["office"] = office_id
-
-        data = create_json_from_row(usgs_row_for_json)
-        office_store_stats[office_id][
-            "attempted"
-        ] += 1  # Increment attempted for this office
-
-        # get existing measurements at site
-        df_existing = pd.DataFrame()  # Initialize as empty
-        try:
-            existing_measurements = cwms.get_measurements(
-                location_id_mask=cwms_loc, office_id=office_id
-            )
-            if existing_measurements and existing_measurements.df is not None:
-                df_existing = existing_measurements.df
-        except Exception as e:
-            logger.error(
-                f"An unexpected error occurred while getting existing measurements for {cwms_loc} ({office_id}). Assuming no existing measurements."
-            )
-
-        _, is_rejected, df_differences = check_single_row_for_duplicates(
-            usgs_row_for_json, df_existing
-        )
-
-        log_prefix = f"USGS site {site_no} -> CWMS loc {cwms_loc} ({office_id}) measurement collected at {usgs_row.instant}"
-
-        if overwrite_flag == 1:
-            try:
-                logger.info(f"{log_prefix} (overwrite enabled). Storing.")
-                cwms.store_measurements(data=[data], fail_if_exists=False)
-                office_store_stats[office_id][
-                    "successful"
-                ] += 1  # Increment successful for this office
-                if not df_differences.empty:
-                    logger.info(
-                        f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
-                    )
-            except requests.exceptions.RequestException as e:
-                logger.error(f"CWMS API network error storing {log_prefix}: {e}")
-                # For overwrite enabled, if it fails, it's an error, not a 'rejection' due to existing data
-            except Exception as e:
-                logger.error(f"Unexpected error storing {log_prefix}: {e}")
-        else:  # overwrite_flag is 0 or some other value, meaning don't overwrite
-            if not is_rejected:
-                try:
-                    logger.info(f"{log_prefix}. Storing.")
-                    cwms.store_measurements(
-                        data=[data]
-                    )  # fail_if_exists=True by default
-                    office_store_stats[office_id][
-                        "successful"
-                    ] += 1  # Increment successful for this office
-                    if not df_differences.empty:
-                        logger.info(
-                            f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
-                        )
-                except requests.exceptions.RequestException as e:
-                    # If fail_if_exists is True (default)
-                    logger.warning(
-                        f"CWMS API network error (likely duplicate or conflict) storing {log_prefix}: {e}"
-                    )
-                    office_store_stats[office_id][
-                        "rejected"
-                    ] += 1  # Increment rejected for this office
-                except Exception as e:
-                    logger.error(f"Unexpected error storing {log_prefix}: {e}")
-            else:
-                logger.warning(
-                    f"{log_prefix} has same number field ({usgs_row.number}) or similar collection time as existing measurement. Not storing."
-                )
-                office_store_stats[office_id][
-                    "rejected"
-                ] += 1  # Increment rejected for this office
-
-
-logger.info("-" * 50)
-logger.info("Processing Summary:")
-logger.info(f"Total USGS measurements fetched: {len(df_meas_usgs)}")
-logger.info(
-    f"Total unique USGS measurements processed for CWMS: {total_usgs_measurements_processed}"
-)
-logger.info(
-    f"Total USGS measurements skipped (no CWMS mapping): {total_usgs_measurements_skipped_no_cwms_mapping}"
-)
-
-logger.info("\nCWMS Store Statistics Per Office:")
-# Calculate global totals from office_store_stats for consistency
-global_attempted = sum(stats["attempted"] for stats in office_store_stats.values())
-global_successful = sum(stats["successful"] for stats in office_store_stats.values())
-global_rejected = sum(stats["rejected"] for stats in office_store_stats.values())
-
-for office, stats in sorted(office_store_stats.items()):
-    logger.info(f"  Office: {office}")
-    logger.info(f"    Attempted: {stats['attempted']}")
-    logger.info(f"    Successful: {stats['successful']}")
-    logger.info(f"    Rejected (Duplicate/Conflict): {stats['rejected']}")
-
-logger.info("\nOverall CWMS Store Statistics:")
-logger.info(
-    f"Total CWMS store attempts (across all configurations): {global_attempted}"
-)
-logger.info(f"Total CWMS stores successful: {global_successful}")
-logger.info(f"Total CWMS stores rejected (duplicate/conflict): {global_rejected}")
-logger.info("-" * 50)
+if BACKFILL_LIST:
+    backfill_mode(BACKFILL_LIST)
+else:
+    realtime_mode()
