@@ -331,8 +331,8 @@ def check_single_row_for_duplicates(row_to_check, df_existing):
         subset=["number"]
     )  # Drop rows where 'number' is NaN
 
-    df_store_compare["number"] = df_store_compare["number"].astype(int)
-    df_existing_compare["number"] = df_existing_compare["number"].astype(int)
+    df_store_compare["number"] = df_store_compare["number"].astype(str)
+    df_existing_compare["number"] = df_existing_compare["number"].astype(str)
 
     df_store_compare["instant"] = pd.to_datetime(df_store_compare["instant"])
     df_existing_compare["instant"] = pd.to_datetime(df_existing_compare["instant"])
@@ -545,7 +545,7 @@ def create_json_from_row(row):
     return json_data
 
 
-def realtime_mode():
+def realtime_mode(DAYS_BACK_COLLECTED, DAYS_BACK_MODIFIED, measurement_site_df):
     execution_date = datetime.now()
     startDT = execution_date - timedelta(DAYS_BACK_COLLECTED)
 
@@ -578,59 +578,75 @@ def realtime_mode():
 
     # This will store stats like: {'office_id_MVP': {'attempted': X, 'successful': Y, 'rejected': Z}}
     office_store_stats = defaultdict(lambda: defaultdict(int))
-    for index, usgs_row in df_meas_usgs.iterrows():
+    for _, usgs_row in df_meas_usgs.iterrows():
         total_usgs_measurements_processed += 1
         site_no = usgs_row.usgs_site_no
 
-        if site_no not in cwms_site_lookup:
-            # logger.warning(
-            #     f"USGS site '{site_no}' not found in CWMS lookup. Skipping measurement collected at {usgs_row.instant}."
-            # )
+        site_filter_df = measurement_site_df[measurement_site_df["alias-id"] == site_no]
+        # skip if site isn't in measurement group
+        if len(site_filter_df) == 0:
             total_usgs_measurements_skipped_no_cwms_mapping += 1
             continue
 
-        # Iterate over all CWMS configurations for this USGS site ---
-        cwms_configs_for_site = cwms_site_lookup[site_no]
-        for config_idx, cwms_config in enumerate(cwms_configs_for_site):
-            cwms_loc = cwms_config["location-id"]
-            office_id = cwms_config["office-id_x"]  # Get the office_id for this config
-            overwrite_flag = cwms_config[
-                "attribute_x"
-            ]  # Assuming 1 means overwrite, 0 means don't overwrite
+        cwms_loc = site_filter_df["location-id"].values[0]
 
-            # Create a copy of the row for JSON creation and modification
-            usgs_row_for_json = usgs_row.copy()
-            usgs_row_for_json["name"] = cwms_loc
-            usgs_row_for_json["office"] = office_id
+        office_id = site_filter_df["office-id_x"].values[0]
+        overwrite_flag = site_filter_df["attribute_x"].values[
+            0
+        ]  # Assuming 1 means overwrite, 0 means don't overwrite
 
-            data = create_json_from_row(usgs_row_for_json)
-            office_store_stats[office_id][
-                "attempted"
-            ] += 1  # Increment attempted for this office
+        # Create a copy of the row for JSON creation and modification
+        usgs_row_for_json = usgs_row.copy()
+        usgs_row_for_json["name"] = cwms_loc
+        usgs_row_for_json["office"] = office_id
 
-            # get existing measurements at site
-            df_existing = pd.DataFrame()  # Initialize as empty
-            try:
-                existing_measurements = cwms.get_measurements(
-                    location_id_mask=cwms_loc, office_id=office_id
-                )
-                if existing_measurements and existing_measurements.df is not None:
-                    df_existing = existing_measurements.df
-            except Exception as e:
-                logger.error(
-                    f"An unexpected error occurred while getting existing measurements for {cwms_loc} ({office_id}). Assuming no existing measurements."
-                )
+        data = create_json_from_row(usgs_row_for_json)
+        office_store_stats[office_id][
+            "attempted"
+        ] += 1  # Increment attempted for this office
 
-            _, is_rejected, df_differences = check_single_row_for_duplicates(
-                usgs_row_for_json, df_existing
+        # get existing measurements at site
+        df_existing = pd.DataFrame()  # Initialize as empty
+        try:
+            existing_measurements = cwms.get_measurements(
+                location_id_mask=cwms_loc, office_id=office_id
+            )
+            if existing_measurements and existing_measurements.df is not None:
+                df_existing = existing_measurements.df
+        except Exception as e:
+            logger.error(
+                f"An unexpected error occurred while getting existing measurements for {cwms_loc} ({office_id}). Assuming no existing measurements."
             )
 
-            log_prefix = f"USGS site {site_no} -> CWMS loc {cwms_loc} ({office_id}) measurement collected at {usgs_row.instant}"
+        _, is_rejected, df_differences = check_single_row_for_duplicates(
+            usgs_row_for_json, df_existing
+        )
 
-            if overwrite_flag == 1:
+        log_prefix = f"USGS site {site_no} -> CWMS loc {cwms_loc} ({office_id}) measurement collected at {usgs_row.instant}"
+
+        if overwrite_flag == 1:
+            try:
+                logger.info(f"{log_prefix} (overwrite enabled). Storing.")
+                cwms.store_measurements(data=[data], fail_if_exists=False)
+                office_store_stats[office_id][
+                    "successful"
+                ] += 1  # Increment successful for this office
+                if not df_differences.empty:
+                    logger.info(
+                        f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
+                    )
+            except requests.exceptions.RequestException as e:
+                logger.error(f"CWMS API network error storing {log_prefix}: {e}")
+                # For overwrite enabled, if it fails, it's an error, not a 'rejection' due to existing data
+            except Exception as e:
+                logger.error(f"Unexpected error storing {log_prefix}: {e}")
+        else:  # overwrite_flag is 0 or some other value, meaning don't overwrite
+            if not is_rejected:
                 try:
-                    logger.info(f"{log_prefix} (overwrite enabled). Storing.")
-                    cwms.store_measurements(data=[data], fail_if_exists=False)
+                    logger.info(f"{log_prefix}. Storing.")
+                    cwms.store_measurements(
+                        data=[data]
+                    )  # fail_if_exists=True by default
                     office_store_stats[office_id][
                         "successful"
                     ] += 1  # Increment successful for this office
@@ -639,41 +655,22 @@ def realtime_mode():
                             f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
                         )
                 except requests.exceptions.RequestException as e:
-                    logger.error(f"CWMS API network error storing {log_prefix}: {e}")
-                    # For overwrite enabled, if it fails, it's an error, not a 'rejection' due to existing data
-                except Exception as e:
-                    logger.error(f"Unexpected error storing {log_prefix}: {e}")
-            else:  # overwrite_flag is 0 or some other value, meaning don't overwrite
-                if not is_rejected:
-                    try:
-                        logger.info(f"{log_prefix}. Storing.")
-                        cwms.store_measurements(
-                            data=[data]
-                        )  # fail_if_exists=True by default
-                        office_store_stats[office_id][
-                            "successful"
-                        ] += 1  # Increment successful for this office
-                        if not df_differences.empty:
-                            logger.info(
-                                f"Differences found between stored data and new data for {log_prefix}:\n{df_differences.to_string()}"
-                            )
-                    except requests.exceptions.RequestException as e:
-                        # If fail_if_exists is True (default)
-                        logger.warning(
-                            f"CWMS API network error (likely duplicate or conflict) storing {log_prefix}: {e}"
-                        )
-                        office_store_stats[office_id][
-                            "rejected"
-                        ] += 1  # Increment rejected for this office
-                    except Exception as e:
-                        logger.error(f"Unexpected error storing {log_prefix}: {e}")
-                else:
+                    # If fail_if_exists is True (default)
                     logger.warning(
-                        f"{log_prefix} has same number field ({usgs_row.number}) or similar collection time as existing measurement. Not storing."
+                        f"CWMS API network error (likely duplicate or conflict) storing {log_prefix}: {e}"
                     )
                     office_store_stats[office_id][
                         "rejected"
                     ] += 1  # Increment rejected for this office
+                except Exception as e:
+                    logger.error(f"Unexpected error storing {log_prefix}: {e}")
+            else:
+                logger.warning(
+                    f"{log_prefix} has same number field ({usgs_row.number}) or similar collection time as existing measurement. Not storing."
+                )
+                office_store_stats[office_id][
+                    "rejected"
+                ] += 1  # Increment rejected for this office
 
     logger.info("-" * 50)
     logger.info("Processing Summary:")
@@ -709,7 +706,7 @@ def realtime_mode():
     pass
 
 
-def backfill_mode(BACKFILL_LIST):
+def backfill_mode(BACKFILL_LIST, measurement_site_df):
     # Initialize summary tracking dictionaries
     site_summary = {}  # Will store stats for each site
     overall_failed_stores = []  # Will store all failed measurement details
@@ -725,6 +722,9 @@ def backfill_mode(BACKFILL_LIST):
 
         cwms_loc = measurement_site_df[measurement_site_df["alias-id"] == usgs_site][
             "location-id"
+        ].values[0]
+        OFFICE = measurement_site_df[measurement_site_df["alias-id"] == usgs_site][
+            "office-id_x"
         ].values[0]
         overwrite_code = int(
             measurement_site_df[measurement_site_df["alias-id"] == usgs_site][
@@ -910,150 +910,149 @@ def backfill_mode(BACKFILL_LIST):
 
 
 # --- Main Script Execution ---
+def main():
 
-
-parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-parser.add_argument(
-    "-d",
-    "--days_back_modified",
-    default="2",
-    help="Days back from current time measurements have been modified in USGS database. Can be integer value",
-)
-parser.add_argument(
-    "-c",
-    "--days_back_collected",
-    default="365",
-    help="Days back from current time measurements have been were collected. Can be integer value",
-)
-
-parser.add_argument(
-    "-o",
-    "--office",
-    required=False,
-    type=str,
-    help="Office to grab data for. If not provided, will read from environment.",
-)
-
-parser.add_argument(
-    "-a",
-    "--api_root",
-    required=False,
-    type=str,
-    help="Api Root for CDA. If not provided, will read from environment.",
-)
-parser.add_argument(
-    "-k",
-    "--api_key",
-    default=None,
-    type=str,
-    help="api key. If not provided, will read from environment.",
-)
-
-parser.add_argument(
-    "-b",
-    "--backfill",
-    default=None,
-    type=str,
-    help="Backfill POR data, use list of USGS IDs (e.g. 05057200, 05051300) or the word 'group' to attempt to backfill all sites in the OFFICE id's Data Acquisition->USGS Measurements group",
-)
-
-args = parser.parse_args()
-DAYS_BACK_MODIFIED = int(args.days_back_modified)
-DAYS_BACK_COLLECTED = int(args.days_back_collected)
-BACKFILL_GROUP = False
-BACKFILL_LIST = False
-if args.backfill is not None:
-    if "group" in args.backfill:
-        BACKFILL_GROUP = True
-    elif type(args.backfill) == str:
-        BACKFILL_LIST = args.backfill.replace(" ", "").split(",")
-
-
-# grab API variables from .env file
-load_dotenv()
-
-
-# Use command line argument if provided, otherwise fall back to environment variable
-APIROOT = args.api_root if args.api_root is not None else os.getenv("API_ROOT")
-APIKEY = args.api_key if args.api_key is not None else os.getenv("API_KEY")
-OFFICE = args.office if args.office is not None else os.getenv("OFFICE")
-
-
-# Validate environment variables
-if not all([APIROOT, OFFICE, APIKEY]):
-    logger.critical(
-        "Missing one or more environment variables (API_ROOT, OFFICE, API_KEY). Exiting."
+    parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
+    parser.add_argument(
+        "-d",
+        "--days_back_modified",
+        default="2",
+        help="Days back from current time measurements have been modified in USGS database. Can be integer value",
     )
-    exit(1)
-
-apiKey = "apikey " + APIKEY
-api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
-
-logger.info("Fetching CWMS location groups...")
-try:
-    usgs_alias_group = cwms.get_location_group(
-        loc_group_id="USGS Station Number",
-        category_id="Agency Aliases",
-        office_id="CWMS",
-    )
-    usgs_measurement_locs = cwms.get_location_group(
-        loc_group_id="USGS Measurements",
-        category_id="Data Acquisition",
-        office_id="CWMS",
-    )
-except requests.exceptions.RequestException as e:
-    logger.critical(f"Failed to fetch CWMS location groups: {e}. Exiting.")
-    exit(1)
-except Exception as e:
-    logger.critical(
-        f"An unexpected error occurred fetching CWMS location groups: {e}. Exiting."
-    )
-    exit(1)
-
-
-# merge them together
-measurement_site_df = pd.merge(
-    usgs_measurement_locs.df,
-    usgs_alias_group.df,
-    on="location-id",
-    how="inner",
-    left_on=None,
-    right_on=None,
-)
-# drop any that don't have a USGS id
-measurement_site_df = measurement_site_df[measurement_site_df["alias-id"].notnull()]
-
-
-if measurement_site_df.empty:
-    logger.warning(
-        "No valid USGS measurement locations found in CWMS after de-duplication. Exiting."
-    )
-    exit(0)
-
-# Pre-create lookup for faster access in the loop
-cwms_site_lookup = defaultdict(list)
-
-for idx, row in measurement_site_df.iterrows():
-    alias_id = row["alias-id"]
-    cwms_site_lookup[alias_id].append(
-        {
-            "location-id": row["location-id"],
-            "office-id_x": row["office-id_x"],
-            "attribute_x": row["attribute_x"],
-        }
+    parser.add_argument(
+        "-c",
+        "--days_back_collected",
+        default="365",
+        help="Days back from current time measurements have been were collected. Can be integer value",
     )
 
-# Log if any alias-ids map to multiple CWMS configurations
-for alias_id, configs in cwms_site_lookup.items():
-    if len(configs) > 1:
-        logger.info(
-            f"USGS alias-id '{alias_id}' maps to multiple CWMS configurations: {[(c['location-id'], c['office-id_x']) for c in configs]}"
+    parser.add_argument(
+        "-o",
+        "--office",
+        required=False,
+        type=str,
+        help="Office to grab data for. If not provided, will read from environment.",
+    )
+
+    parser.add_argument(
+        "-a",
+        "--api_root",
+        required=False,
+        type=str,
+        help="Api Root for CDA. If not provided, will read from environment.",
+    )
+    parser.add_argument(
+        "-k",
+        "--api_key",
+        default=None,
+        type=str,
+        help="api key. If not provided, will read from environment.",
+    )
+
+    parser.add_argument(
+        "-b",
+        "--backfill",
+        default=None,
+        type=str,
+        help="Backfill POR data, use list of USGS IDs (e.g. 05057200, 05051300) or the word 'group' to attempt to backfill all sites in the OFFICE id's Data Acquisition->USGS Measurements group",
+    )
+
+    args = parser.parse_args()
+    DAYS_BACK_MODIFIED = int(args.days_back_modified)
+    DAYS_BACK_COLLECTED = int(args.days_back_collected)
+    BACKFILL_GROUP = False
+    BACKFILL_LIST = False
+    if args.backfill is not None:
+        if "group" in args.backfill:
+            BACKFILL_GROUP = True
+        elif type(args.backfill) == str:
+            BACKFILL_LIST = args.backfill.replace(" ", "").split(",")
+
+    # grab API variables from .env file
+    load_dotenv()
+
+    # Use command line argument if provided, otherwise fall back to environment variable
+    APIROOT = args.api_root if args.api_root is not None else os.getenv("API_ROOT")
+    APIKEY = args.api_key if args.api_key is not None else os.getenv("API_KEY")
+    OFFICE = args.office if args.office is not None else os.getenv("OFFICE")
+
+    # Validate environment variables
+    if not all([APIROOT, OFFICE, APIKEY]):
+        logger.critical(
+            "Missing one or more environment variables (API_ROOT, OFFICE, API_KEY). Exiting."
         )
-# backfilling entire group get list of USGS ids to backfill
-if BACKFILL_GROUP:
-    BACKFILL_LIST = list(measurement_site_df["alias-id"].values)
+        exit(1)
 
-if BACKFILL_LIST:
-    backfill_mode(BACKFILL_LIST)
-else:
-    realtime_mode()
+    apiKey = "apikey " + APIKEY
+    api = cwms.api.init_session(api_root=APIROOT, api_key=apiKey)
+
+    logger.info("Fetching CWMS location groups...")
+    try:
+        usgs_alias_group = cwms.get_location_group(
+            loc_group_id="USGS Station Number",
+            category_id="Agency Aliases",
+            office_id="CWMS",
+        )
+        usgs_measurement_locs = cwms.get_location_group(
+            loc_group_id="USGS Measurements",
+            category_id="Data Acquisition",
+            office_id="CWMS",
+        )
+    except requests.exceptions.RequestException as e:
+        logger.critical(f"Failed to fetch CWMS location groups: {e}. Exiting.")
+        exit(1)
+    except Exception as e:
+        logger.critical(
+            f"An unexpected error occurred fetching CWMS location groups: {e}. Exiting."
+        )
+        exit(1)
+
+    # merge them together
+    measurement_site_df = pd.merge(
+        usgs_measurement_locs.df,
+        usgs_alias_group.df,
+        on="location-id",
+        how="inner",
+        left_on=None,
+        right_on=None,
+    )
+    # drop any that don't have a USGS id
+    measurement_site_df = measurement_site_df[measurement_site_df["alias-id"].notnull()]
+
+    if measurement_site_df.empty:
+        logger.warning(
+            "No valid USGS measurement locations found in CWMS after de-duplication. Exiting."
+        )
+        exit(0)
+
+    # Pre-create lookup for faster access in the loop
+    cwms_site_lookup = defaultdict(list)
+
+    for idx, row in measurement_site_df.iterrows():
+        alias_id = row["alias-id"]
+        cwms_site_lookup[alias_id].append(
+            {
+                "location-id": row["location-id"],
+                "office-id_x": row["office-id_x"],
+                "attribute_x": row["attribute_x"],
+            }
+        )
+
+    # Log if any alias-ids map to multiple CWMS configurations
+    for alias_id, configs in cwms_site_lookup.items():
+        if len(configs) > 1:
+            logger.info(
+                f"USGS alias-id '{alias_id}' maps to multiple CWMS configurations: {[(c['location-id'], c['office-id_x']) for c in configs]}"
+            )
+    # backfilling entire group get list of USGS ids to backfill
+    if BACKFILL_GROUP:
+        BACKFILL_LIST = list(measurement_site_df["alias-id"].values)
+
+    if BACKFILL_LIST:
+        backfill_mode(BACKFILL_LIST, measurement_site_df)
+    else:
+        realtime_mode(DAYS_BACK_COLLECTED, DAYS_BACK_MODIFIED, measurement_site_df)
+
+
+if __name__ == "__main__":
+    main()
