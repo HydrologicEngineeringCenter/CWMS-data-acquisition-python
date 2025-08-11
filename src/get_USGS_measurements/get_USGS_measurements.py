@@ -496,11 +496,9 @@ def create_json_from_row(row):
         "used": (
             bool(row["used"]) if pd.notna(row["used"]) else False
         ),  # Ensure proper bool conversion
-        "agency": ("USGS" 
-                    if "unsp" in str(row["agency"]).lower()
-                    else str(row["agency"])
+        "agency": (
+            "USGS" if "unsp" in str(row["agency"]).lower() else str(row["agency"])
         ),
-
         "party": str(row["party"]),
         "wm-comments": f"imported from get_USGS_measurements.py {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')}",
         "instant": instant_value,
@@ -746,7 +744,6 @@ def backfill_mode(BACKFILL_LIST):
         except Exception as e:
             logger.critical(f"Failed to fetch USGS measurements: {e}. Exiting.")
             df_meas_usgs = pd.DataFrame()
-
 
         if df_meas_usgs.empty:
             logger.info("No new USGS measurements found to process.")
